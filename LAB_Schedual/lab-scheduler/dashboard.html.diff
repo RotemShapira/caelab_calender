@@ -1,0 +1,108 @@
+--- /mnt/user-data/uploads/dashboard.html	2026-07-21 14:27:38.027643000 +0000
++++ lab-scheduler-current/app/templates/dashboard.html	2026-07-22 05:46:49.608884385 +0000
+@@ -20,10 +20,13 @@
+         <tbody id="calendarBody"></tbody>
+     </table>
+ 
+-    <div class="mt-3 small text-muted">
+-        <span class="badge" style="background-color:#28a745;">&nbsp;&nbsp;</span> Booked (approved)
+-        &nbsp;&nbsp;
+-        <span class="badge bg-light text-dark border">&nbsp;&nbsp;</span> Free
++    <div class="mt-3 small text-muted d-flex flex-wrap gap-3 align-items-center">
++        <span><span class="badge" style="background-color:#28a745;">&nbsp;&nbsp;</span> Booked</span>
++        <span><span class="badge" style="background-color:#fd7e14;">&nbsp;&nbsp;</span> Booked (weekend)</span>
++        <span><span class="badge" style="background-color:#dc3545;">&nbsp;&nbsp;</span> Booked (holiday)</span>
++        <span><span class="badge" style="background-color:#dbe9f6;color:#000;border:1px solid #ccc;">&nbsp;&nbsp;</span> Weekend (Fri/Sat)</span>
++        <span><span class="badge" style="background-color:#e8daef;color:#000;border:1px solid #ccc;">&nbsp;&nbsp;</span> Holiday</span>
++        <span><span class="badge bg-light text-dark border">&nbsp;&nbsp;</span> Free</span>
+     </div>
+ </div>
+ 
+@@ -94,6 +97,22 @@
+ }
+ const DAY_MAP = buildDayMap(APPROVED_BOOKINGS);
+ 
++// Israeli public holidays, fetched from the backend (which pulls them from
++// Google Calendar). Cached client-side per year to avoid refetching on
++// every month click within the same year.
++const HOLIDAYS_CACHE = {}; // year -> {"YYYY-MM-DD": "Holiday Name"}
++
++async function ensureHolidaysLoaded(year) {
++    if (HOLIDAYS_CACHE[year]) return HOLIDAYS_CACHE[year];
++    try {
++        const res = await fetch(`/api/holidays?year=${year}`);
++        HOLIDAYS_CACHE[year] = res.ok ? await res.json() : {};
++    } catch (e) {
++        HOLIDAYS_CACHE[year] = {};
++    }
++    return HOLIDAYS_CACHE[year];
++}
++
+ const MONTH_NAMES = ["January","February","March","April","May","June",
+                       "July","August","September","October","November","December"];
+ 
+@@ -127,13 +146,34 @@
+         const cell = document.createElement("td");
+         cell.textContent = day;
+ 
+-        if (DAY_MAP[key]) {
+-            cell.style.backgroundColor = "#28a745"; // green
+-            cell.style.color = "#fff";
++        const weekday = new Date(viewYear, viewMonth, day).getDay(); // 0=Sun ... 6=Sat
++        const isWeekend = (weekday === 5 || weekday === 6); // Israeli weekend: Fri + Sat
++        const holidayName = (HOLIDAYS_CACHE[viewYear] || {})[key];
++        const isHoliday = !!holidayName;
++        const isBooked = !!DAY_MAP[key];
++
++        // Priority when booked: holiday > weekend > ordinary.
++        // When free: holiday shading > weekend shading > plain.
++        let bg = null, fg = "#000";
++        if (isBooked && isHoliday) { bg = "#dc3545"; fg = "#fff"; }
++        else if (isBooked && isWeekend) { bg = "#fd7e14"; fg = "#fff"; }
++        else if (isBooked) { bg = "#28a745"; fg = "#fff"; }
++        else if (isHoliday) { bg = "#e8daef"; }
++        else if (isWeekend) { bg = "#dbe9f6"; }
++
++        if (bg) {
++            cell.style.backgroundColor = bg;
++            cell.style.color = fg;
++        }
++
++        const tooltipParts = [];
++        if (isHoliday) tooltipParts.push(holidayName);
++        if (isBooked) {
+             cell.style.cursor = "pointer";
+-            cell.title = DAY_MAP[key].map(b => b.equipment + " — " + b.user_name).join(", ");
+             cell.addEventListener("click", () => showDayDetail(key, DAY_MAP[key]));
++            tooltipParts.push(DAY_MAP[key].map(b => b.equipment + " — " + b.user_name).join(", "));
+         }
++        if (tooltipParts.length) cell.title = tooltipParts.join(" | ");
+ 
+         row.appendChild(cell);
+ 
+@@ -164,17 +204,22 @@
+     card.classList.remove("d-none");
+ }
+ 
++async function loadAndRender() {
++    await ensureHolidaysLoaded(viewYear);
++    renderCalendar();
++}
++
+ document.getElementById("prevMonthBtn").addEventListener("click", () => {
+     viewMonth--;
+     if (viewMonth < 0) { viewMonth = 11; viewYear--; }
+-    renderCalendar();
++    loadAndRender();
+ });
+ document.getElementById("nextMonthBtn").addEventListener("click", () => {
+     viewMonth++;
+     if (viewMonth > 11) { viewMonth = 0; viewYear++; }
+-    renderCalendar();
++    loadAndRender();
+ });
+ 
+-renderCalendar();
++loadAndRender();
+ </script>
+ {% endblock %}

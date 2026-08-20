@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block title %}Admin Panel{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-start mb-1">
+    <h3>🛠️ Admin: Booking Resolution</h3>
+    <a href="/admin/settings" class="btn btn-sm btn-outline-secondary">⚙️ Account Settings</a>
+</div>
+<p class="text-muted">Rows highlighted in yellow have a detected conflict. Approve one side and deny the other.</p>
+
+<h5 class="mt-4">Pending Requests ({{ pending|length }})</h5>
+{% if not pending %}
+    <div class="alert alert-info">No pending requests.</div>
+{% else %}
+<div class="table-responsive mb-4">
+    <table class="table align-middle mb-0">
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Equipment</th>
+                <th>User</th>
+                <th>Dates</th>
+                <th>Details</th>
+                <th>Conflicts With</th>
+                <th>Action</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for b in pending %}
+            <tr class="{% if b.id in conflicts_by_id %}conflict-row{% endif %}">
+                <td>{{ b.id }}</td>
+                <td>{{ b.equipment }}</td>
+                <td>{{ b.user_name }}</td>
+                <td>{{ b.start_date }} → {{ b.end_date }}</td>
+                <td>{{ b.experiment_details or "—" }}</td>
+                <td>
+                    {% if b.id in conflicts_by_id %}
+                        <ul class="mb-0 ps-3">
+                        {% for c in conflicts_by_id[b.id] %}
+                            <li>#{{ c.id }} {{ c.user_name }} ({{ c.start_date }}–{{ c.end_date }}, {{ c.status }})</li>
+                        {% endfor %}
+                        </ul>
+                    {% else %}
+                        <span class="text-muted">none</span>
+                    {% endif %}
+                </td>
+                <td>
+                    <form method="post" action="/admin/bookings/{{ b.id }}/approve" class="d-inline">
+                        <button class="btn btn-sm btn-success" type="submit">Approve</button>
+                    </form>
+                    <form method="post" action="/admin/bookings/{{ b.id }}/deny" class="d-inline">
+                        <button class="btn btn-sm btn-danger" type="submit">Deny</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+<h5 class="mt-4">Approved ({{ approved|length }})</h5>
+{% if not approved %}
+    <p class="text-muted">None yet.</p>
+{% else %}
+<div class="table-responsive mb-4">
+    <table class="table table-sm align-middle mb-0">
+        <thead><tr><th>#</th><th>Equipment</th><th>User</th><th>Dates</th><th>Action</th></tr></thead>
+        <tbody>
+            {% for b in approved %}
+            <tr>
+                <td>{{ b.id }}</td>
+                <td>{{ b.equipment }}</td>
+                <td>{{ b.user_name }}</td>
+                <td>{{ b.start_date }} → {{ b.end_date }}</td>
+                <td>
+                    <form method="post" action="/admin/bookings/{{ b.id }}/deny" class="d-inline">
+                        <button class="btn btn-sm btn-outline-danger" type="submit">Revoke / Deny</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+<h5 class="mt-4">Recently Denied</h5>
+<p class="text-muted small">Denied bookings are automatically deleted after 30 days. Use "Delete" below to remove one immediately.</p>
+{% if not denied %}
+    <p class="text-muted">None yet.</p>
+{% else %}
+<div class="table-responsive">
+    <table class="table table-sm table-secondary align-middle mb-0">
+        <thead><tr><th>#</th><th>Equipment</th><th>User</th><th>Dates</th><th>Action</th></tr></thead>
+        <tbody>
+            {% for b in denied %}
+            <tr>
+                <td>{{ b.id }}</td>
+                <td>{{ b.equipment }}</td>
+                <td>{{ b.user_name }}</td>
+                <td>{{ b.start_date }} → {{ b.end_date }}</td>
+                <td>
+                    <form method="post" action="/admin/bookings/{{ b.id }}/approve" class="d-inline">
+                        <button class="btn btn-sm btn-outline-success" type="submit">Re-approve</button>
+                    </form>
+                    <form method="post" action="/admin/bookings/{{ b.id }}/delete" class="d-inline"
+                          onsubmit="return confirm('Permanently delete this denied booking? This cannot be undone.');">
+                        <button class="btn btn-sm btn-outline-dark" type="submit">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+{% endblock %}
