@@ -2,11 +2,21 @@
 {% block title %}Admin Panel{% endblock %}
 {% block content %}
 <div class="d-flex justify-content-between align-items-start mb-1">
-    <h3>🛠️ Admin: Booking Resolution</h3>
-    <a href="/admin/settings" class="btn btn-sm btn-outline-secondary">⚙️ Account Settings</a>
+    <h3>🛠️ Admin: Booking Resolution & Lab Management</h3>
+    <a href="/admin/settings" class="btn btn-sm btn-outline-secondary">⚙️ Admin Account Settings</a>
 </div>
 <p class="text-muted">Rows highlighted in yellow have a detected conflict. Approve one side and deny the other.</p>
 
+{% if admin_msg %}
+<div class="alert alert-success">{{ admin_msg }}</div>
+{% endif %}
+{% if admin_err %}
+<div class="alert alert-danger">{{ admin_err }}</div>
+{% endif %}
+
+<!-- --------------------------------------------------------------------- -->
+<!-- Pending / Approved / Denied Bookings                                  -->
+<!-- --------------------------------------------------------------------- -->
 <h5 class="mt-4">Pending Requests ({{ pending|length }})</h5>
 {% if not pending %}
     <div class="alert alert-info">No pending requests.</div>
@@ -89,7 +99,7 @@
 {% if not denied %}
     <p class="text-muted">None yet.</p>
 {% else %}
-<div class="table-responsive">
+<div class="table-responsive mb-4">
     <table class="table table-sm table-secondary align-middle mb-0">
         <thead><tr><th>#</th><th>Equipment</th><th>User</th><th>Dates</th><th>Action</th></tr></thead>
         <tbody>
@@ -106,6 +116,135 @@
                     <form method="post" action="/admin/bookings/{{ b.id }}/delete" class="d-inline"
                           onsubmit="return confirm('Permanently delete this denied booking? This cannot be undone.');">
                         <button class="btn btn-sm btn-outline-dark" type="submit">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+<hr class="my-4">
+
+<!-- --------------------------------------------------------------------- -->
+<!-- Schedule Collision Notification Email Settings                        -->
+<!-- --------------------------------------------------------------------- -->
+<div class="row g-4 mt-1">
+    <div class="col-lg-6">
+        <div class="card p-4 h-100">
+            <h5 class="mb-2">📧 Schedule Collision Email Notification</h5>
+            <p class="text-muted small mb-3">
+                Set the email address(es) that will receive an automatic alert whenever a newly submitted booking collides with an existing booking.
+            </p>
+            <form method="post" action="/admin/notifications">
+                <div class="mb-3">
+                    <label class="form-label">Recipient Email Address(es)</label>
+                    <input type="text" class="form-control" name="notify_email_to"
+                           placeholder="e.g. lab-admin@technion.ac.il (comma-separated for multiple)"
+                           value="{{ notif_cfg.notify_email_to or '' }}">
+                </div>
+
+                <details class="mb-3">
+                    <summary class="small text-secondary" style="cursor:pointer;">
+                        Outgoing SMTP Server Settings
+                        {% if notif_cfg.smtp_host %}
+                            <span class="badge bg-success ms-1">Configured ({{ notif_cfg.smtp_host }})</span>
+                        {% else %}
+                            <span class="badge bg-secondary ms-1">Not set yet</span>
+                        {% endif %}
+                    </summary>
+                    <div class="mt-2 p-3 bg-light rounded border">
+                        <div class="row g-2">
+                            <div class="col-8">
+                                <label class="form-label small mb-1">SMTP Host</label>
+                                <input type="text" class="form-control form-control-sm" name="smtp_host"
+                                       placeholder="e.g. smtp.gmail.com" value="{{ notif_cfg.smtp_host or '' }}">
+                            </div>
+                            <div class="col-4">
+                                <label class="form-label small mb-1">SMTP Port</label>
+                                <input type="number" class="form-control form-control-sm" name="smtp_port"
+                                       value="{{ notif_cfg.smtp_port or '587' }}">
+                            </div>
+                            <div class="col-6">
+                                <label class="form-label small mb-1">SMTP Username</label>
+                                <input type="text" class="form-control form-control-sm" name="smtp_user"
+                                       placeholder="sender@gmail.com" value="{{ notif_cfg.smtp_user or '' }}">
+                            </div>
+                            <div class="col-6">
+                                <label class="form-label small mb-1">SMTP App Password</label>
+                                <input type="password" class="form-control form-control-sm" name="smtp_password"
+                                       placeholder="{% if notif_cfg.smtp_password %}•••••••• (saved){% else %}App password{% endif %}">
+                            </div>
+                            <div class="col-12">
+                                <label class="form-label small mb-1">From Address (optional)</label>
+                                <input type="text" class="form-control form-control-sm" name="smtp_from"
+                                       placeholder="Defaults to SMTP Username" value="{{ notif_cfg.smtp_from or '' }}">
+                            </div>
+                        </div>
+                    </div>
+                </details>
+
+                <button type="submit" class="btn btn-primary btn-sm">Save Notification Settings</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- ----------------------------------------------------------------- -->
+    <!-- Lab Users Management (Add User + Set Default Password)            -->
+    <!-- ----------------------------------------------------------------- -->
+    <div class="col-lg-6">
+        <div class="card p-4 h-100">
+            <h5 class="mb-2">👥 Add Lab User</h5>
+            <p class="text-muted small mb-3">
+                Create a login account for a lab member with a default password. They can change their password after signing in.
+            </p>
+            <form method="post" action="/admin/users/create">
+                <div class="mb-3">
+                    <label class="form-label">Username / Lab Member Name</label>
+                    <input type="text" class="form-control" name="username" required maxlength="120"
+                           placeholder="e.g. rotem or David Cohen">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Default Password</label>
+                    <input type="text" class="form-control" name="default_password" required minlength="4"
+                           placeholder="e.g. Lab2026!">
+                </div>
+                <button type="submit" class="btn btn-success btn-sm">➕ Add User</button>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Existing Lab Users List -->
+<h5 class="mt-4">Registered Lab Users ({{ users|length }})</h5>
+{% if not users %}
+    <div class="alert alert-secondary">No lab user accounts created yet. (Your Admin login can always sign in at <code>/login</code> as well.)</div>
+{% else %}
+<div class="table-responsive">
+    <table class="table table-sm align-middle mb-0">
+        <thead>
+            <tr>
+                <th>Username</th>
+                <th>Reset to New Default Password</th>
+                <th>Action</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for u in users %}
+            <tr>
+                <td><strong>{{ u.username }}</strong></td>
+                <td>
+                    <form method="post" action="/admin/users/{{ u.id }}/reset-password" class="d-flex gap-2 align-items-center" style="max-width: 340px;">
+                        <input type="text" class="form-control form-control-sm" name="new_password"
+                               placeholder="New default password" required minlength="4">
+                        <button type="submit" class="btn btn-sm btn-outline-primary text-nowrap">Set Password</button>
+                    </form>
+                </td>
+                <td>
+                    <form method="post" action="/admin/users/{{ u.id }}/delete" class="d-inline"
+                          onsubmit="return confirm('Delete user {{ u.username }}?');">
+                        <button type="submit" class="btn btn-sm btn-outline-danger">Delete User</button>
                     </form>
                 </td>
             </tr>

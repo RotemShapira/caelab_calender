@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.env
+lab-scheduler/.env
+lab-scheduler/data/lab_production.db*
+lab-scheduler/data/*.bak*
+lab-scheduler/tailscale/state/
+data/lab_production.db*
+data/*.bak*
+tailscale/state/

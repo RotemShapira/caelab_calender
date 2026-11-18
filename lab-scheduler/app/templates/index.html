@@ -17,13 +17,13 @@
             <form method="post" action="/bookings">
                 <div class="mb-3">
                     <label class="form-label">Your Name</label>
-                    <input type="text" class="form-control" name="user_name" required
-                           value="{{ form_data.user_name or '' }}">
+                    <input type="text" class="form-control" name="user_name" required maxlength="120"
+                           value="{{ form_data.user_name or (request.state.user.username if request.state.user else '') }}">
                 </div>
 
                 <div class="mb-3">
                     <label class="form-label">Equipment / Experiment Name</label>
-                    <input type="text" class="form-control" name="equipment" required
+                    <input type="text" class="form-control" name="equipment" required maxlength="120"
                            placeholder="e.g. XRD Machine, Fume Hood 2, Forced Resonance Rig"
                            value="{{ form_data.equipment or '' }}">
                     <div class="form-text">Use a consistent name so conflicts on the same equipment are detected.</div>
@@ -31,19 +31,19 @@
 
                 <div class="mb-3">
                     <label class="form-label">Experiment Details</label>
-                    <textarea class="form-control" name="experiment_details" rows="3"
+                    <textarea class="form-control" name="experiment_details" rows="3" maxlength="2000"
                               placeholder="Brief description of what you're running">{{ form_data.experiment_details or '' }}</textarea>
                 </div>
 
                 <div class="row">
                     <div class="col-md-6 mb-3">
                         <label class="form-label">Start Date</label>
-                        <input type="date" class="form-control" name="start_date" required
+                        <input type="date" class="form-control" name="start_date" required min="2020-01-01" max="2100-12-31"
                                value="{{ form_data.start_date or '' }}">
                     </div>
                     <div class="col-md-6 mb-3">
                         <label class="form-label">End Date</label>
-                        <input type="date" class="form-control" name="end_date" required
+                        <input type="date" class="form-control" name="end_date" required min="2020-01-01" max="2100-12-31"
                                value="{{ form_data.end_date or '' }}">
                     </div>
                 </div>

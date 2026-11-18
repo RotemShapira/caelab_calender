@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Change Password{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-6">
+        <div class="card p-4">
+            <h4 class="mb-3">🔑 Change Your Password</h4>
+            <p class="text-muted">Signed in as <strong>{{ username }}</strong>.</p>
+
+            {% if success %}
+            <div class="alert alert-success">Your password has been updated.</div>
+            {% endif %}
+
+            {% if errors %}
+            <div class="alert alert-danger">
+                <ul class="mb-0">
+                    {% for e in errors %}<li>{{ e }}</li>{% endfor %}
+                </ul>
+            </div>
+            {% endif %}
+
+            <form method="post" action="/account">
+                <div class="mb-3">
+                    <label class="form-label">Current Password</label>
+                    <input type="password" class="form-control" name="current_password" required>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label">New Password</label>
+                    <input type="password" class="form-control" name="new_password" required minlength="4">
+                </div>
+
+                <div class="mb-4">
+                    <label class="form-label">Confirm New Password</label>
+                    <input type="password" class="form-control" name="confirm_password" required minlength="4">
+                </div>
+
+                <button type="submit" class="btn btn-primary w-100">Update Password</button>
+            </form>
+
+            <a href="/" class="btn btn-link mt-2">← Back to Booking Form</a>
+        </div>
+    </div>
+</div>
+{% endblock %}

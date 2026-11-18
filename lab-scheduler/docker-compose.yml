@@ -2,8 +2,8 @@ services:
   # ---------------------------------------------------------------------------
   # Isolated Tailscale Funnel Sidecar
   # Exposes ONLY the Lab Scheduler over public HTTPS (https://lab-scheduler.<tailnet>.ts.net)
-  # in unprivileged userspace mode — no host networking, no router port forwarding.
-  # Authenticate interactively on TrueNAS by running: sudo bash setup_truenas.sh
+  # in unprivileged userspace mode — no host networking, no router port forwarding,
+  # and no plain-HTTP host port exposed on the LAN.
   # ---------------------------------------------------------------------------
   ts-funnel:
     image: tailscale/tailscale:latest
@@ -18,11 +18,11 @@ services:
       - ./tailscale/state:/var/lib/tailscale
     security_opt:
       - no-new-privileges:true
-    ports:
-      - "8001:8000"
+    mem_limit: 256m
+    pids_limit: 100
 
   # ---------------------------------------------------------------------------
-  # Lab Scheduler Application Container
+  # Hardened Lab Scheduler Application Container (Non-Root UID 10001)
   # Shares the isolated network namespace of `ts-funnel` (127.0.0.1:8000).
   # ---------------------------------------------------------------------------
   lab-scheduler:
@@ -32,13 +32,21 @@ services:
     network_mode: service:ts-funnel
     depends_on:
       - ts-funnel
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
     security_opt:
       - no-new-privileges:true
+    mem_limit: 256m
+    pids_limit: 100
     environment:
       # --- Timezone (ensures "today" matches Israel time) ---
       TZ: "Asia/Jerusalem"
 
-      # --- Initial Admin login (HTTP Basic Auth on /admin, also changeable at /admin/settings) ---
+      # --- Initial Admin login (also changeable at /admin/settings) ---
       ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
       ADMIN_PASSWORD: "${ADMIN_PASSWORD:-changeme}"
 
@@ -48,7 +56,7 @@ services:
       # --- Optional webhook notification (Slack/Discord/n8n/Home Assistant) ---
       WEBHOOK_URL: "${WEBHOOK_URL:-}"
 
-      # --- Optional email notification (leave blank to disable) ---
+      # --- Optional email notification (can also be configured in the /admin GUI) ---
       SMTP_HOST: "${SMTP_HOST:-}"
       SMTP_PORT: "${SMTP_PORT:-587}"
       SMTP_USER: "${SMTP_USER:-}"
@@ -56,8 +64,8 @@ services:
       SMTP_FROM: "${SMTP_FROM:-}"
       NOTIFY_EMAIL_TO: "${NOTIFY_EMAIL_TO:-}"
 
-      # --- Database location inside the container (matches the volume below) ---
-      DATABASE_URL: "sqlite:////app/data/lab_scheduler.db"
+      # --- Git-ignored live database file (never overwritten or deleted by git pull) ---
+      DATABASE_URL: "sqlite:////app/data/lab_production.db"
 
       # --- Auto-purge denied bookings after this many days (default 30) ---
       DENIED_RETENTION_DAYS: "${DENIED_RETENTION_DAYS:-30}"

@@ -46,3 +46,30 @@ class AdminCredential(Base):
     username = Column(String(120), nullable=False, unique=True)
     password_hash = Column(String(255), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class User(Base):
+    """
+    Lab member user accounts created and managed by the Admin from /admin.
+    Lab members log in with their username and password (initial default
+    password set by Admin, changeable by the user at /account).
+    """
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String(120), nullable=False, unique=True, index=True)
+    password_hash = Column(String(255), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class AppSetting(Base):
+    """
+    Key-value settings persisted in SQLite (such as conflict notification
+    recipient email addresses and session signing key).
+    """
+    __tablename__ = "app_settings"
+
+    key = Column(String(120), primary_key=True)
+    value = Column(Text, nullable=False, default="")
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

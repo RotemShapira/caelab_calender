@@ -44,6 +44,9 @@ def fetch_holidays(year: int) -> dict[str, str]:
     Results are cached in-memory per year for _CACHE_TTL_SECONDS so the
     dashboard doesn't hit the Google API on every page view.
     """
+    if not (2020 <= year <= 2100):
+        return {}
+
     cached = _cache.get(year)
     if cached and (time.time() - cached[0]) < _CACHE_TTL_SECONDS:
         return cached[1]

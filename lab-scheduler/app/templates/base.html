@@ -11,12 +11,26 @@
     <nav class="navbar navbar-expand-lg navbar-dark bg-dark mb-4">
         <div class="container">
             <a class="navbar-brand" href="/">🧪 Lab Scheduler</a>
-            <div class="navbar-nav">
+            <div class="navbar-nav me-auto">
                 <a class="nav-link" href="/">New Booking</a>
                 <a class="nav-link" href="/dashboard">Schedule</a>
                 <a class="nav-link" href="/history">History</a>
                 <a class="nav-link" href="/admin">Admin</a>
             </div>
+            {% if request.state.user %}
+            <div class="navbar-nav align-items-center gap-2">
+                <span class="navbar-text text-light small me-1">
+                    👤 <strong>{{ request.state.user.username }}</strong>
+                    {% if request.state.user.role == 'admin' %}<span class="badge bg-warning text-dark ms-1">Admin</span>{% endif %}
+                </span>
+                {% if request.state.user.role == 'user' %}
+                <a class="btn btn-sm btn-outline-light" href="/account">Password</a>
+                {% endif %}
+                <form method="post" action="/logout" class="d-inline mb-0">
+                    <button type="submit" class="btn btn-sm btn-outline-secondary text-light">Log Out</button>
+                </form>
+            </div>
+            {% endif %}
         </div>
     </nav>
     <div class="container pb-5">
