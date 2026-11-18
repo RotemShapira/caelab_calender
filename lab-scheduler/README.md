@@ -78,46 +78,20 @@ This stack includes a dedicated, unprivileged **Tailscale Funnel sidecar contain
   - `lab-scheduler` runs with `read_only: true` root filesystem, `cap_drop: [ALL]`, `no-new-privileges`, and shares only the sidecar's loopback (`127.0.0.1:8000`).
   - Zero router ports are opened, and zero ports need to be exposed on your TrueNAS LAN IP.
 
-### Step 1: One-Time Tailscale Admin Console Setup
-1. **Enable HTTPS Certificates**:
-   - In the [Tailscale Admin Console → DNS](https://login.tailscale.com/admin/dns), make sure **MagicDNS** is enabled and click **Enable HTTPS** under *HTTPS Certificates*.
-2. **Allow Funnel in Access Controls (ACLs)** & Isolate from Tailnet Devices:
-   - Go to **Access Controls** in the Tailscale Admin Console.
-   - Ensure the `funnel` nodeAttr is enabled (Tailscale adds this by default when enabling Funnel; optionally restrict it to `tag:funnel-only` so this container cannot initiate connections to any other device on your tailnet):
-     ```json
-     "tagOwners": {
-       "tag:funnel-only": ["autogroup:admin"]
-     },
-     "nodeAttrs": [
-       {
-         "target": ["autogroup:member", "tag:funnel-only"],
-         "attr": ["funnel"]
-       }
-     ]
-     ```
-3. **Generate an Auth Key**:
-   - Go to [Settings → Keys](https://login.tailscale.com/admin/settings/keys) → **Generate auth key**.
-   - Recommended: Enable **Reusable** (or single-use) and optionally attach tag `tag:funnel-only` (a tagged node has zero outbound access to your other Tailscale devices unless explicitly granted in ACLs).
-   - Copy the `tskey-auth-...` key.
+### Copy to TrueNAS & Authenticate Interactively (No Auth Key Needed)
 
-### Step 2: Run as an Isolated Container Stack (or VM) on TrueNAS
-1. Copy the `lab-scheduler/` folder onto your TrueNAS dataset (e.g., `/mnt/<pool>/apps/lab-scheduler/`) — or inside a lightweight Ubuntu VM in **TrueNAS → Virtualization** if you also want full KVM hypervisor separation from the TrueNAS kernel.
-2. Create `.env` from `.env.example` (or edit `docker-compose.yml` directly):
+1. Copy the entire `lab-scheduler/` folder as-is onto your TrueNAS dataset (e.g., `/mnt/<pool>/lab-scheduler/`).
+2. Open the TrueNAS Shell (or SSH into TrueNAS) and run the interactive setup script:
    ```bash
-   cp .env.example .env
+   cd /mnt/<pool>/lab-scheduler
+   sudo bash setup_truenas.sh
    ```
-   Set:
-   - `TS_AUTHKEY=tskey-auth-...` (your Tailscale Auth Key)
-   - `ADMIN_PASSWORD=...` (a strong password for `/admin`)
-3. Start the stack:
-   ```bash
-   docker compose up -d --build
-   ```
-4. Check the public Funnel URL in the logs:
-   ```bash
-   docker exec lab-scheduler-ts tailscale funnel status
-   ```
-   Your app is now live at **`https://lab-scheduler.<your-tailnet-name>.ts.net`**!
+3. What `setup_truenas.sh` does:
+   - Asks you for an initial Admin Password (saved to `.env`, and changeable anytime in the web GUI at `/admin/settings`).
+   - Builds and starts both isolated containers (`lab-scheduler` and `lab-scheduler-ts`).
+   - Runs `tailscale up --hostname=lab-scheduler` and prints a clickable login URL (`https://login.tailscale.com/a/...`) — open that link in your browser to authenticate.
+   - Runs `tailscale funnel --bg 8000` (if Funnel/HTTPS isn't enabled on your Tailscale account yet, it prints a one-click link to enable it) and saves the Funnel configuration persistently across reboots.
+   - Prints your live public HTTPS URL: **`https://lab-scheduler.<your-tailnet-name>.ts.net`**!
 
 1. Copy the whole `lab-scheduler/` folder onto your TrueNAS box, e.g. into
    `/mnt/<pool>/apps/lab-scheduler/`.
