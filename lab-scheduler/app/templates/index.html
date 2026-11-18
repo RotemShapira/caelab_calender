@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}New Booking Request{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-7">
+        <div class="card p-4">
+            <h3 class="mb-3">Request Equipment / Experiment Time</h3>
+
+            {% if errors %}
+            <div class="alert alert-danger">
+                <ul class="mb-0">
+                    {% for e in errors %}<li>{{ e }}</li>{% endfor %}
+                </ul>
+            </div>
+            {% endif %}
+
+            <form method="post" action="/bookings">
+                <div class="mb-3">
+                    <label class="form-label">Your Name</label>
+                    <input type="text" class="form-control" name="user_name" required
+                           value="{{ form_data.user_name or '' }}">
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label">Equipment / Experiment Name</label>
+                    <input type="text" class="form-control" name="equipment" required
+                           placeholder="e.g. XRD Machine, Fume Hood 2, Forced Resonance Rig"
+                           value="{{ form_data.equipment or '' }}">
+                    <div class="form-text">Use a consistent name so conflicts on the same equipment are detected.</div>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label">Experiment Details</label>
+                    <textarea class="form-control" name="experiment_details" rows="3"
+                              placeholder="Brief description of what you're running">{{ form_data.experiment_details or '' }}</textarea>
+                </div>
+
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <label class="form-label">Start Date</label>
+                        <input type="date" class="form-control" name="start_date" required
+                               value="{{ form_data.start_date or '' }}">
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <label class="form-label">End Date</label>
+                        <input type="date" class="form-control" name="end_date" required
+                               value="{{ form_data.end_date or '' }}">
+                    </div>
+                </div>
+
+                <button type="submit" class="btn btn-primary w-100 mt-2">Submit Request</button>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,21 @@
+--- /mnt/user-data/uploads/admin.html	2026-07-21 14:27:37.912566000 +0000
++++ lab-scheduler-current2/app/templates/admin.html	2026-07-22 08:20:46.084232974 +0000
+@@ -85,6 +85,7 @@
+ {% endif %}
+ 
+ <h5 class="mt-4">Recently Denied</h5>
++<p class="text-muted small">Denied bookings are automatically deleted after 30 days. Use "Delete" below to remove one immediately.</p>
+ {% if not denied %}
+     <p class="text-muted">None yet.</p>
+ {% else %}
+@@ -102,6 +103,10 @@
+                     <form method="post" action="/admin/bookings/{{ b.id }}/approve" class="d-inline">
+                         <button class="btn btn-sm btn-outline-success" type="submit">Re-approve</button>
+                     </form>
++                    <form method="post" action="/admin/bookings/{{ b.id }}/delete" class="d-inline"
++                          onsubmit="return confirm('Permanently delete this denied booking? This cannot be undone.');">
++                        <button class="btn btn-sm btn-outline-dark" type="submit">Delete</button>
++                    </form>
+                 </td>
+             </tr>
+             {% endfor %}

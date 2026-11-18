@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Booking History{% endblock %}
+{% block content %}
+<h3 class="mb-1">📜 Booking History</h3>
+<p class="text-muted">Completed, approved bookings whose end date has already passed.</p>
+
+{% if not bookings %}
+    <div class="alert alert-info">No completed bookings yet.</div>
+{% else %}
+<div class="table-responsive">
+    <table class="table table-hover align-middle mb-0">
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Equipment</th>
+                <th>Booked By</th>
+                <th>Start</th>
+                <th>End</th>
+                <th>Details</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for b in bookings %}
+            <tr>
+                <td>{{ b.id }}</td>
+                <td><strong>{{ b.equipment }}</strong></td>
+                <td>{{ b.user_name }}</td>
+                <td>{{ b.start_date }}</td>
+                <td>{{ b.end_date }}</td>
+                <td>{{ b.experiment_details or "—" }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+{% endblock %}

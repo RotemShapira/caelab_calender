@@ -1,0 +1,82 @@
+services:
+  # ---------------------------------------------------------------------------
+  # Isolated Tailscale Funnel Sidecar
+  # Exposes ONLY the Lab Scheduler over public HTTPS (https://lab-scheduler.<tailnet>.ts.net)
+  # in unprivileged userspace mode — no host networking, no router port forwarding.
+  # ---------------------------------------------------------------------------
+  ts-funnel:
+    image: tailscale/tailscale:latest
+    container_name: lab-scheduler-ts
+    hostname: lab-scheduler
+    restart: unless-stopped
+    environment:
+      # Paste your Tailscale Auth Key here (or in .env as TS_AUTHKEY=tskey-auth-...)
+      TS_AUTHKEY: "${TS_AUTHKEY:-}"
+      TS_STATE_DIR: "/var/lib/tailscale"
+      # Unprivileged userspace networking: no /dev/net/tun or NET_ADMIN capability needed
+      TS_USERSPACE: "true"
+      # Automatically enables HTTPS + Tailscale Funnel -> http://127.0.0.1:8000
+      TS_SERVE_CONFIG: "/config/funnel.json"
+    volumes:
+      - ./tailscale/state:/var/lib/tailscale
+      - ./tailscale/funnel.json:/config/funnel.json:ro
+    security_opt:
+      - no-new-privileges:true
+    # Optional: Uncomment if you ALSO want direct LAN access via http://<truenas-ip>:8001
+    # ports:
+    #   - "8001:8000"
+
+  # ---------------------------------------------------------------------------
+  # Hardened Lab Scheduler Application Container
+  # Shares the isolated network namespace of `ts-funnel` (127.0.0.1:8000).
+  # ---------------------------------------------------------------------------
+  lab-scheduler:
+    build: .
+    container_name: lab-scheduler
+    restart: unless-stopped
+    network_mode: service:ts-funnel
+    depends_on:
+      - ts-funnel
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      # --- Timezone (ensures "today" matches Israel time) ---
+      TZ: "Asia/Jerusalem"
+
+      # --- Initial Admin login (HTTP Basic Auth on /admin, also changeable at /admin/settings) ---
+      ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-changeme}"   # CHANGE THIS before exposing on Funnel
+
+      # --- Optional Google Calendar API key for Israeli holiday shading on /dashboard ---
+      GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
+
+      # --- Optional webhook notification (Slack/Discord/n8n/Home Assistant) ---
+      WEBHOOK_URL: "${WEBHOOK_URL:-}"
+
+      # --- Optional email notification (leave blank to disable) ---
+      SMTP_HOST: "${SMTP_HOST:-}"
+      SMTP_PORT: "${SMTP_PORT:-587}"
+      SMTP_USER: "${SMTP_USER:-}"
+      SMTP_PASSWORD: "${SMTP_PASSWORD:-}"
+      SMTP_FROM: "${SMTP_FROM:-}"
+      NOTIFY_EMAIL_TO: "${NOTIFY_EMAIL_TO:-}"
+
+      # --- Database location inside the container (matches the volume below) ---
+      DATABASE_URL: "sqlite:////app/data/lab_scheduler.db"
+
+      # --- Auto-purge denied bookings after this many days (default 30) ---
+      DENIED_RETENTION_DAYS: "${DENIED_RETENTION_DAYS:-30}"
+    volumes:
+      # Persist the SQLite DB across container rebuilds/updates.
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

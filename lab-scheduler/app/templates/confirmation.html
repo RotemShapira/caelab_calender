@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Request Submitted{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-7">
+        <div class="card p-4">
+            {% if has_conflict %}
+                <div class="alert alert-warning">
+                    <h4 class="alert-heading">⚠️ Conflict Detected</h4>
+                    <p>Your request for <strong>{{ booking.equipment }}</strong>
+                       ({{ booking.start_date }} to {{ booking.end_date }}) overlaps with
+                       {{ conflicts|length }} existing request(s):</p>
+                    <ul class="mb-2">
+                        {% for c in conflicts %}
+                        <li>{{ c.user_name }} — {{ c.start_date }} to {{ c.end_date }} (status: {{ c.status }})</li>
+                        {% endfor %}
+                    </ul>
+                    <p class="mb-0">The lab admin has been notified and will resolve the conflict. Your request is saved as <strong>pending</strong>.</p>
+                </div>
+            {% else %}
+                <div class="alert alert-success">
+                    <h4 class="alert-heading">✅ Request Submitted</h4>
+                    <p class="mb-0">No conflicts found. Your request has been <strong>approved</strong> automatically and now appears on the public schedule.</p>
+                </div>
+            {% endif %}
+
+            <dl class="row mt-3">
+                <dt class="col-sm-4">Requested by</dt><dd class="col-sm-8">{{ booking.user_name }}</dd>
+                <dt class="col-sm-4">Equipment</dt><dd class="col-sm-8">{{ booking.equipment }}</dd>
+                <dt class="col-sm-4">Dates</dt><dd class="col-sm-8">{{ booking.start_date }} to {{ booking.end_date }}</dd>
+            </dl>
+
+            <div class="d-flex gap-2 mt-3">
+                <a href="/" class="btn btn-outline-secondary">Submit Another Request</a>
+                <a href="/dashboard" class="btn btn-outline-primary">View Schedule</a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,66 @@
+--- /mnt/user-data/uploads/main.py	2026-07-21 14:26:54.437337000 +0000
++++ lab-scheduler-current2/app/main.py	2026-07-22 08:20:36.608586663 +0000
+@@ -1,3 +1,4 @@
++import asyncio
+ import logging
+ from datetime import date
+ 
+@@ -8,7 +9,7 @@
+ from pydantic import ValidationError
+ from sqlalchemy.orm import Session
+ 
+-from . import conflict, models, notifications, schemas
++from . import cleanup, conflict, models, notifications, schemas
+ from .auth import require_admin
+ from .database import Base, SessionLocal, engine, get_db
+ from .models import AdminCredential
+@@ -26,6 +27,16 @@
+ templates = Jinja2Templates(directory="app/templates")
+ 
+ 
++@app.on_event("startup")
++async def _start_background_cleanup() -> None:
++    """
++    Kicks off a background loop that purges denied bookings older than
++    DENIED_RETENTION_DAYS (default 30) once at startup, then once a day.
++    See app/cleanup.py.
++    """
++    asyncio.create_task(cleanup.cleanup_loop(SessionLocal))
++
++
+ # ---------------------------------------------------------------------------
+ # Public: booking submission form
+ # ---------------------------------------------------------------------------
+@@ -285,6 +296,32 @@
+     db.commit()
+     return RedirectResponse(url="/admin", status_code=303)
+ 
++
++@app.post("/admin/bookings/{booking_id}/delete")
++def delete_booking(
++    booking_id: int,
++    db: Session = Depends(get_db),
++    _admin: str = Depends(require_admin),
++):
++    """
++    Permanently deletes a booking. Restricted to already-denied bookings
++    as a safety guard, so this can't be used to accidentally wipe a live
++    pending/approved request — deny it first, then delete. Denied bookings
++    are also purged automatically after DENIED_RETENTION_DAYS regardless
++    (see app/cleanup.py).
++    """
++    booking = db.query(models.Booking).get(booking_id)
++    if not booking:
++        raise HTTPException(status_code=404, detail="Booking not found")
++    if booking.status != models.STATUS_DENIED:
++        raise HTTPException(
++            status_code=400,
++            detail="Only denied bookings can be deleted. Deny it first, then delete.",
++        )
++    db.delete(booking)
++    db.commit()
++    return RedirectResponse(url="/admin", status_code=303)
++
+ 
+ @app.get("/health")
+ def health_check():

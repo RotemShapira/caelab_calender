@@ -1,0 +1,230 @@
+{% extends "base.html" %}
+{% block title %}Schedule Dashboard{% endblock %}
+{% block content %}
+<h3 class="mb-3">📅 Approved Lab Schedule</h3>
+<p class="text-muted">Finalized, conflict-free bookings only. Pending or denied requests are not shown here.</p>
+
+<div class="card p-3 mb-4">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <button class="btn btn-outline-secondary btn-sm" id="prevMonthBtn">&laquo; Prev</button>
+        <h5 class="mb-0" id="calendarMonthLabel"></h5>
+        <button class="btn btn-outline-secondary btn-sm" id="nextMonthBtn">Next &raquo;</button>
+    </div>
+
+    <table class="table table-bordered text-center mb-0" id="calendarTable">
+        <thead>
+            <tr>
+                <th>Sun</th><th>Mon</th><th>Tue</th><th>Wed</th><th>Thu</th><th>Fri</th><th>Sat</th>
+            </tr>
+        </thead>
+        <tbody id="calendarBody"></tbody>
+    </table>
+
+    <div class="mt-3 small text-muted d-flex flex-wrap gap-3 align-items-center">
+        <span><span class="badge" style="background-color:#28a745;">&nbsp;&nbsp;</span> Booked</span>
+        <span><span class="badge" style="background-color:#fd7e14;">&nbsp;&nbsp;</span> Booked (weekend)</span>
+        <span><span class="badge" style="background-color:#dc3545;">&nbsp;&nbsp;</span> Booked (holiday)</span>
+        <span><span class="badge" style="background-color:#dbe9f6;color:#000;border:1px solid #ccc;">&nbsp;&nbsp;</span> Weekend (Fri/Sat)</span>
+        <span><span class="badge" style="background-color:#e8daef;color:#000;border:1px solid #ccc;">&nbsp;&nbsp;</span> Holiday</span>
+        <span><span class="badge bg-light text-dark border">&nbsp;&nbsp;</span> Free</span>
+    </div>
+</div>
+
+<!-- Day detail panel, filled in by JS when a green day is clicked -->
+<div class="card p-3 mb-4 d-none" id="dayDetailCard">
+    <h6 id="dayDetailTitle" class="mb-2"></h6>
+    <ul class="mb-0" id="dayDetailList"></ul>
+</div>
+
+<h5 class="mt-4">Full Listing</h5>
+{% if not bookings %}
+    <div class="alert alert-info">No approved bookings yet.</div>
+{% else %}
+<div class="table-responsive">
+    <table class="table table-hover align-middle mb-0">
+        <thead>
+            <tr>
+                <th>Equipment</th>
+                <th>Booked By</th>
+                <th>Start</th>
+                <th>End</th>
+                <th>Details</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for b in bookings %}
+            <tr class="{% if b.end_date < today %}table-secondary{% elif b.start_date <= today <= b.end_date %}table-success{% endif %}">
+                <td><strong>{{ b.equipment }}</strong></td>
+                <td>{{ b.user_name }}</td>
+                <td>{{ b.start_date }}</td>
+                <td>{{ b.end_date }}</td>
+                <td>{{ b.experiment_details or "—" }}</td>
+                <td>
+                    {% if b.end_date < today %}
+                        <span class="badge bg-secondary">Completed</span>
+                    {% elif b.start_date <= today <= b.end_date %}
+                        <span class="badge bg-success">In Progress</span>
+                    {% else %}
+                        <span class="badge bg-primary">Upcoming</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+<script>
+// Approved bookings passed from the server (dates as "YYYY-MM-DD" strings).
+const APPROVED_BOOKINGS = {{ bookings_json | tojson }};
+
+// Build a map of "YYYY-MM-DD" -> [bookings on that day] for fast lookup.
+function buildDayMap(bookings) {
+    const map = {};
+    for (const b of bookings) {
+        let cur = new Date(b.start_date + "T00:00:00");
+        const end = new Date(b.end_date + "T00:00:00");
+        while (cur <= end) {
+            // FIX: Extract the local year, month, and day to prevent UTC shifting
+            const year = cur.getFullYear();
+            const month = String(cur.getMonth() + 1).padStart(2, '0');
+            const day = String(cur.getDate()).padStart(2, '0');
+            const key = `${year}-${month}-${day}`;
+            
+            if (!map[key]) map[key] = [];
+            map[key].push(b);
+            cur.setDate(cur.getDate() + 1);
+        }
+    }
+    return map;
+}
+const DAY_MAP = buildDayMap(APPROVED_BOOKINGS);
+
+// Israeli public holidays, fetched from the backend (which pulls them from
+// Google Calendar). Cached client-side per year to avoid refetching on
+// every month click within the same year.
+const HOLIDAYS_CACHE = {}; // year -> {"YYYY-MM-DD": "Holiday Name"}
+
+async function ensureHolidaysLoaded(year) {
+    if (HOLIDAYS_CACHE[year]) return HOLIDAYS_CACHE[year];
+    try {
+        const res = await fetch(`/api/holidays?year=${year}`);
+        HOLIDAYS_CACHE[year] = res.ok ? await res.json() : {};
+    } catch (e) {
+        HOLIDAYS_CACHE[year] = {};
+    }
+    return HOLIDAYS_CACHE[year];
+}
+
+const MONTH_NAMES = ["January","February","March","April","May","June",
+                      "July","August","September","October","November","December"];
+
+let viewYear, viewMonth; // viewMonth is 0-indexed
+(function initToToday() {
+    const t = new Date();
+    viewYear = t.getFullYear();
+    viewMonth = t.getMonth();
+})();
+
+function pad(n) { return n < 10 ? "0" + n : "" + n; }
+
+function renderCalendar() {
+    document.getElementById("calendarMonthLabel").textContent =
+        MONTH_NAMES[viewMonth] + " " + viewYear;
+
+    const firstDay = new Date(viewYear, viewMonth, 1);
+    const startWeekday = firstDay.getDay(); // 0=Sun
+    const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+
+    const body = document.getElementById("calendarBody");
+    body.innerHTML = "";
+
+    let row = document.createElement("tr");
+    for (let i = 0; i < startWeekday; i++) {
+        row.appendChild(document.createElement("td"));
+    }
+
+    for (let day = 1; day <= daysInMonth; day++) {
+        const key = viewYear + "-" + pad(viewMonth + 1) + "-" + pad(day);
+        const cell = document.createElement("td");
+        cell.textContent = day;
+
+        const weekday = new Date(viewYear, viewMonth, day).getDay(); // 0=Sun ... 6=Sat
+        const isWeekend = (weekday === 5 || weekday === 6); // Israeli weekend: Fri + Sat
+        const holidayName = (HOLIDAYS_CACHE[viewYear] || {})[key];
+        const isHoliday = !!holidayName;
+        const isBooked = !!DAY_MAP[key];
+
+        // Priority when booked: holiday > weekend > ordinary.
+        // When free: holiday shading > weekend shading > plain.
+        let bg = null, fg = "#000";
+        if (isBooked && isHoliday) { bg = "#dc3545"; fg = "#fff"; }
+        else if (isBooked && isWeekend) { bg = "#fd7e14"; fg = "#fff"; }
+        else if (isBooked) { bg = "#28a745"; fg = "#fff"; }
+        else if (isHoliday) { bg = "#e8daef"; }
+        else if (isWeekend) { bg = "#dbe9f6"; }
+
+        if (bg) {
+            cell.style.backgroundColor = bg;
+            cell.style.color = fg;
+        }
+
+        const tooltipParts = [];
+        if (isHoliday) tooltipParts.push(holidayName);
+        if (isBooked) {
+            cell.style.cursor = "pointer";
+            cell.addEventListener("click", () => showDayDetail(key, DAY_MAP[key]));
+            tooltipParts.push(DAY_MAP[key].map(b => b.equipment + " — " + b.user_name).join(", "));
+        }
+        if (tooltipParts.length) cell.title = tooltipParts.join(" | ");
+
+        row.appendChild(cell);
+
+        if ((startWeekday + day) % 7 === 0) {
+            body.appendChild(row);
+            row = document.createElement("tr");
+        }
+    }
+    if (row.children.length > 0) {
+        while (row.children.length < 7) row.appendChild(document.createElement("td"));
+        body.appendChild(row);
+    }
+}
+
+function showDayDetail(dateKey, bookings) {
+    const card = document.getElementById("dayDetailCard");
+    const title = document.getElementById("dayDetailTitle");
+    const list = document.getElementById("dayDetailList");
+
+    title.textContent = "Bookings on " + dateKey;
+    list.innerHTML = "";
+    for (const b of bookings) {
+        const li = document.createElement("li");
+        li.textContent = b.equipment + " — " + b.user_name +
+            (b.experiment_details ? " (" + b.experiment_details + ")" : "");
+        list.appendChild(li);
+    }
+    card.classList.remove("d-none");
+}
+
+async function loadAndRender() {
+    await ensureHolidaysLoaded(viewYear);
+    renderCalendar();
+}
+
+document.getElementById("prevMonthBtn").addEventListener("click", () => {
+    viewMonth--;
+    if (viewMonth < 0) { viewMonth = 11; viewYear--; }
+    loadAndRender();
+});
+document.getElementById("nextMonthBtn").addEventListener("click", () => {
+    viewMonth++;
+    if (viewMonth > 11) { viewMonth = 0; viewYear++; }
+    loadAndRender();
+});
+
+loadAndRender();
+</script>
+{% endblock %}
