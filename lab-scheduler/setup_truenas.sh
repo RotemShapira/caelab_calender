@@ -36,32 +36,56 @@ EOF
     echo "Saved initial admin credentials to .env (changeable anytime at /admin/settings)."
 fi
 
-# 2. Prepare persistent folders
+# 2. Prepare persistent folders and ensure SQLite database is writable inside container
 mkdir -p ./data ./tailscale/state
+chmod -R 777 ./data
 
-# 3. Build and start the isolated containers
+# 3. Build and start the containers cleanly
 echo ""
-echo "=== [1/3] Building and starting containers ==="
+echo "=== [1/4] Building and starting containers ==="
 if docker compose version >/dev/null 2>&1; then
+    docker compose down --remove-orphans || true
     docker compose up -d --build
 else
+    docker-compose down --remove-orphans || true
     docker-compose up -d --build
 fi
 
-# Wait briefly for tailscaled socket to be ready
-sleep 2
-
-# 4. Interactive Tailscale authentication
+# 4. Verify FastAPI app is listening on 127.0.0.1:8000 inside the shared namespace
 echo ""
-echo "=== [2/3] Authenticating Tailscale Container ==="
-echo "Open the login link below in your browser to connect this container:"
+echo "=== [2/4] Verifying FastAPI app health on 127.0.0.1:8000 ==="
+APP_OK=0
+for i in 1 2 3 4 5 6 7 8 9 10; do
+    if docker exec lab-scheduler curl -fsS http://127.0.0.1:8000/health >/dev/null 2>&1; then
+        APP_OK=1
+        echo "FastAPI app is healthy and listening on 127.0.0.1:8000!"
+        break
+    fi
+    sleep 1
+done
+
+if [ "$APP_OK" -ne 1 ]; then
+    echo "ERROR: lab-scheduler container is not responding on port 8000. Logs:"
+    docker logs lab-scheduler || true
+    exit 1
+fi
+
+# 5. Interactive Tailscale authentication
+echo ""
+echo "=== [3/4] Authenticating Tailscale Container ==="
+echo "If prompted below, open the login link in your browser to connect:"
 docker exec -it lab-scheduler-ts tailscale up --hostname=lab-scheduler --accept-dns=false
 
-# 5. Enable Tailscale Funnel on port 8000
+# 6. Enable Tailscale Funnel on port 8000 & pre-provision HTTPS certificate
 echo ""
-echo "=== [3/3] Enabling Public HTTPS via Tailscale Funnel ==="
-echo "If Tailscale prompts you with a link to enable HTTPS/Funnel, click it in your browser:"
+echo "=== [4/4] Enabling Public HTTPS via Tailscale Funnel ==="
 docker exec -it lab-scheduler-ts tailscale funnel --bg 8000
+
+TS_DOMAIN=$(docker exec lab-scheduler-ts tailscale status --json | grep -o '"DNSName":[[:space:]]*"[^"]*"' | head -n1 | cut -d'"' -f4 | sed 's/\.$//')
+if [ -n "${TS_DOMAIN:-}" ]; then
+    echo "Provisioning Let's Encrypt HTTPS certificate for ${TS_DOMAIN} (this may take 15-30 seconds on first run)..."
+    docker exec lab-scheduler-ts tailscale cert "${TS_DOMAIN}" >/dev/null 2>&1 || true
+fi
 
 echo ""
 echo "=========================================================="

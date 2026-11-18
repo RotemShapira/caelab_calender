@@ -18,12 +18,11 @@ services:
       - ./tailscale/state:/var/lib/tailscale
     security_opt:
       - no-new-privileges:true
-    # Optional: Uncomment if you ALSO want direct LAN access via http://<truenas-ip>:8001
-    # ports:
-    #   - "8001:8000"
+    ports:
+      - "8001:8000"
 
   # ---------------------------------------------------------------------------
-  # Hardened Lab Scheduler Application Container
+  # Lab Scheduler Application Container
   # Shares the isolated network namespace of `ts-funnel` (127.0.0.1:8000).
   # ---------------------------------------------------------------------------
   lab-scheduler:
@@ -33,11 +32,6 @@ services:
     network_mode: service:ts-funnel
     depends_on:
       - ts-funnel
-    read_only: true
-    tmpfs:
-      - /tmp
-    cap_drop:
-      - ALL
     security_opt:
       - no-new-privileges:true
     environment:
