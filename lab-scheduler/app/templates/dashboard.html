@@ -1,9 +1,32 @@
 {% extends "base.html" %}
 {% block title %}Schedule Dashboard{% endblock %}
 {% block content %}
-<h3 class="mb-3">📅 Approved Lab Schedule</h3>
-<p class="text-muted">Finalized, conflict-free bookings only. Click any booked day to view its hourly breakdown.</p>
+<h3 class="mb-2">📅 Approved Lab Schedule</h3>
+<p class="text-muted mb-3">Finalized, conflict-free bookings only. Filter by machine below and click any day on the calendar to inspect its exact scheduled hours.</p>
 
+<!-- Machine / Device Filter Bar -->
+{% if filter_devices %}
+<div class="card p-3 mb-4">
+    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">
+        <span class="fw-semibold small text-uppercase text-muted">🔍 Filter by Machine / Device</span>
+        <div class="d-flex gap-2">
+            <button type="button" class="btn btn-outline-primary btn-sm py-0 px-2" id="selectAllDevicesBtn">Select All</button>
+            <button type="button" class="btn btn-outline-secondary btn-sm py-0 px-2" id="clearAllDevicesBtn">Clear All</button>
+        </div>
+    </div>
+    <div class="d-flex flex-wrap gap-2" id="deviceFilterContainer">
+        {% for dev in filter_devices %}
+        <div class="form-check form-check-inline border rounded px-3 py-1 m-0 bg-light">
+            <input class="form-check-input device-filter-cb" type="checkbox" id="dev_filter_{{ loop.index }}" value="{{ dev }}" checked>
+            <label class="form-check-label small fw-semibold" for="dev_filter_{{ loop.index }}" style="cursor:pointer;">{{ dev }}</label>
+        </div>
+        {% endfor %}
+    </div>
+    <div class="form-text mt-2" id="filterStatusText"></div>
+</div>
+{% endif %}
+
+<!-- Calendar Card -->
 <div class="card p-3 mb-4">
     <div class="d-flex justify-content-between align-items-center mb-3">
         <button class="btn btn-outline-secondary btn-sm" id="prevMonthBtn">&laquo; Prev</button>
@@ -22,7 +45,7 @@
 
     <div class="mt-3 small text-muted d-flex flex-wrap gap-3 align-items-center">
         <span><span class="badge" style="background-color:#28a745;">&nbsp;&nbsp;</span> Booked (All Day)</span>
-        <span><span class="badge" style="background-color:#20c997;">&nbsp;&nbsp;</span> Booked (Partial Hours 🕒)</span>
+        <span><span class="badge" style="background-color:#20c997;">&nbsp;&nbsp;</span> Booked (Partial Hours 🕒 — click to view hours)</span>
         <span><span class="badge" style="background-color:#fd7e14;">&nbsp;&nbsp;</span> Booked (Weekend)</span>
         <span><span class="badge" style="background-color:#dc3545;">&nbsp;&nbsp;</span> Booked (Holiday)</span>
         <span><span class="badge" style="background-color:#dbe9f6;color:#000;border:1px solid #ccc;">&nbsp;&nbsp;</span> Weekend (Fri/Sat)</span>
@@ -31,19 +54,24 @@
     </div>
 </div>
 
-<!-- Day detail + Hourly Breakdown panel, filled in by JS when a day is clicked -->
-<div class="card p-3 mb-4 d-none" id="dayDetailCard">
-    <h6 id="dayDetailTitle" class="mb-2"></h6>
-    <ul class="mb-3" id="dayDetailList"></ul>
+<!-- Clicked Day Detail & Hourly Breakdown Panel -->
+<div class="card border-primary p-3 mb-4 d-none" id="dayDetailCard">
+    <div class="d-flex justify-content-between align-items-center mb-2">
+        <h5 id="dayDetailTitle" class="mb-0 text-primary"></h5>
+        <button type="button" class="btn btn-sm btn-outline-secondary" id="closeDayDetailBtn">&times; Close</button>
+    </div>
+    <div id="dayDetailEmpty" class="alert alert-light border mb-0 d-none"></div>
+    <ul class="list-group list-group-flush mb-3" id="dayDetailList"></ul>
     <div id="hourlyBreakdownContainer"></div>
 </div>
 
-<h5 class="mt-4">Full Listing</h5>
+<!-- Full Listing Table (also synced to Machine Filter) -->
+<h5 class="mt-4">Full Listing <span class="text-muted small fw-normal" id="listingCountLabel"></span></h5>
 {% if not bookings %}
     <div class="alert alert-info">No approved bookings yet.</div>
 {% else %}
 <div class="table-responsive">
-    <table class="table table-hover align-middle mb-0">
+    <table class="table table-hover align-middle mb-0" id="fullListingTable">
         <thead>
             <tr>
                 <th>Device</th>
@@ -57,7 +85,8 @@
         </thead>
         <tbody>
             {% for b in bookings %}
-            <tr class="{% if b.end_date < today %}table-secondary{% elif b.start_date <= today <= b.end_date %}table-success{% endif %}">
+            <tr data-device="{{ b.equipment }}"
+                class="{% if b.end_date < today %}table-secondary{% elif b.start_date <= today <= b.end_date %}table-success{% endif %}">
                 <td><strong>{{ b.equipment }}</strong></td>
                 <td>{{ b.user_name }}</td>
                 <td>{{ b.start_date }}</td>
@@ -84,10 +113,51 @@
         </tbody>
     </table>
 </div>
+<div class="alert alert-secondary mt-2 d-none" id="noMatchingListingAlert">
+    No approved bookings match the currently selected machine filter.
+</div>
 {% endif %}
 
 <script>
-const APPROVED_BOOKINGS = {{ bookings_json | tojson }};
+const ALL_APPROVED_BOOKINGS = {{ bookings_json | tojson }};
+const HOLIDAYS_CACHE = {}; // year -> {"YYYY-MM-DD": "Holiday Name"}
+
+const MONTH_NAMES = ["January","February","March","April","May","June",
+                      "July","August","September","October","November","December"];
+
+let viewYear, viewMonth;
+let selectedDateKey = null;
+let currentDayMap = {};
+
+(function initToToday() {
+    const t = new Date();
+    viewYear = t.getFullYear();
+    viewMonth = t.getMonth();
+})();
+
+function pad(n) { return n < 10 ? "0" + n : "" + n; }
+
+function timeToMinutes(t, fallback) {
+    if (!t) return fallback;
+    const parts = t.split(":");
+    return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
+}
+
+function getSelectedDevices() {
+    const checkboxes = document.querySelectorAll(".device-filter-cb");
+    if (!checkboxes.length) return null; // no filter bar rendered
+    const selected = new Set();
+    checkboxes.forEach(cb => {
+        if (cb.checked) selected.add(cb.value);
+    });
+    return selected;
+}
+
+function getFilteredBookings() {
+    const selected = getSelectedDevices();
+    if (selected === null) return ALL_APPROVED_BOOKINGS;
+    return ALL_APPROVED_BOOKINGS.filter(b => selected.has(b.equipment));
+}
 
 function buildDayMap(bookings) {
     const map = {};
@@ -106,9 +176,43 @@ function buildDayMap(bookings) {
     }
     return map;
 }
-const DAY_MAP = buildDayMap(APPROVED_BOOKINGS);
 
-const HOLIDAYS_CACHE = {}; // year -> {"YYYY-MM-DD": "Holiday Name"}
+function updateFilterStatusAndTable() {
+    const checkboxes = document.querySelectorAll(".device-filter-cb");
+    const selected = getSelectedDevices();
+    const statusEl = document.getElementById("filterStatusText");
+
+    if (statusEl && selected !== null) {
+        if (selected.size === checkboxes.length) {
+            statusEl.textContent = `Showing all ${checkboxes.length} machine(s).`;
+        } else if (selected.size === 0) {
+            statusEl.textContent = "No machines selected — select one or more machines above to view their schedule.";
+        } else {
+            statusEl.textContent = `Showing ${selected.size} of ${checkboxes.length} machine(s): ${Array.from(selected).join(", ")}.`;
+        }
+    }
+
+    const table = document.getElementById("fullListingTable");
+    const noMatchAlert = document.getElementById("noMatchingListingAlert");
+    const countLabel = document.getElementById("listingCountLabel");
+
+    if (table) {
+        const rows = table.querySelectorAll("tbody tr");
+        let visibleCount = 0;
+        rows.forEach(tr => {
+            const dev = tr.getAttribute("data-device");
+            const show = (selected === null) || selected.has(dev);
+            tr.classList.toggle("d-none", !show);
+            if (show) visibleCount++;
+        });
+        if (noMatchAlert) {
+            noMatchAlert.classList.toggle("d-none", visibleCount > 0);
+        }
+        if (countLabel) {
+            countLabel.textContent = `(${visibleCount} shown)`;
+        }
+    }
+}
 
 async function ensureHolidaysLoaded(year) {
     if (HOLIDAYS_CACHE[year]) return HOLIDAYS_CACHE[year];
@@ -121,25 +225,11 @@ async function ensureHolidaysLoaded(year) {
     return HOLIDAYS_CACHE[year];
 }
 
-const MONTH_NAMES = ["January","February","March","April","May","June",
-                      "July","August","September","October","November","December"];
-
-let viewYear, viewMonth;
-(function initToToday() {
-    const t = new Date();
-    viewYear = t.getFullYear();
-    viewMonth = t.getMonth();
-})();
-
-function pad(n) { return n < 10 ? "0" + n : "" + n; }
-
-function timeToMinutes(t, fallback) {
-    if (!t) return fallback;
-    const parts = t.split(":");
-    return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
-}
-
 function renderCalendar() {
+    const filteredBookings = getFilteredBookings();
+    currentDayMap = buildDayMap(filteredBookings);
+    updateFilterStatusAndTable();
+
     document.getElementById("calendarMonthLabel").textContent =
         MONTH_NAMES[viewMonth] + " " + viewYear;
 
@@ -163,7 +253,7 @@ function renderCalendar() {
         const isWeekend = (weekday === 5 || weekday === 6);
         const holidayName = (HOLIDAYS_CACHE[viewYear] || {})[key];
         const isHoliday = !!holidayName;
-        const dayBookings = DAY_MAP[key] || [];
+        const dayBookings = currentDayMap[key] || [];
         const isBooked = dayBookings.length > 0;
         const hasAllDay = dayBookings.some(b => !b.start_time || !b.end_time);
         const isPartialOnly = isBooked && !hasAllDay;
@@ -181,18 +271,31 @@ function renderCalendar() {
             cell.style.color = fg;
         }
 
+        if (selectedDateKey === key) {
+            cell.style.outline = "3px solid #0d6efd";
+            cell.style.outlineOffset = "-3px";
+            cell.style.fontWeight = "bold";
+        }
+
+        cell.style.cursor = "pointer";
         cell.textContent = isPartialOnly ? `${day} 🕒` : `${day}`;
 
         const tooltipParts = [];
         if (isHoliday) tooltipParts.push(holidayName);
         if (isBooked) {
-            cell.style.cursor = "pointer";
-            cell.addEventListener("click", () => showDayDetail(key, dayBookings, holidayName));
             tooltipParts.push(
                 dayBookings.map(b => `${b.equipment} (${b.time_label}) — ${b.user_name}`).join(", ")
             );
+        } else {
+            tooltipParts.push("Click to view day availability");
         }
-        if (tooltipParts.length) cell.title = tooltipParts.join(" | ");
+        cell.title = tooltipParts.join(" | ");
+
+        cell.addEventListener("click", () => {
+            selectedDateKey = key;
+            renderCalendar();
+            showDayDetail(key, currentDayMap[key] || [], holidayName, true);
+        });
 
         row.appendChild(cell);
 
@@ -205,21 +308,60 @@ function renderCalendar() {
         while (row.children.length < 7) row.appendChild(document.createElement("td"));
         body.appendChild(row);
     }
+
+    // If a day detail panel is currently open, refresh it to match the active filter
+    if (selectedDateKey && !document.getElementById("dayDetailCard").classList.contains("d-none")) {
+        const yr = parseInt(selectedDateKey.slice(0, 4), 10);
+        const hName = (HOLIDAYS_CACHE[yr] || {})[selectedDateKey];
+        showDayDetail(selectedDateKey, currentDayMap[selectedDateKey] || [], hName, false);
+    }
 }
 
-function showDayDetail(dateKey, bookings, holidayName) {
+function showDayDetail(dateKey, bookings, holidayName, shouldScroll) {
     const card = document.getElementById("dayDetailCard");
     const title = document.getElementById("dayDetailTitle");
+    const emptyBox = document.getElementById("dayDetailEmpty");
     const list = document.getElementById("dayDetailList");
     const hourlyBox = document.getElementById("hourlyBreakdownContainer");
 
-    title.textContent = "Schedule for " + dateKey + (holidayName ? " (" + holidayName + ")" : "");
+    title.textContent = "🕒 Scheduled Hours for " + dateKey + (holidayName ? " (" + holidayName + ")" : "");
     list.innerHTML = "";
+    hourlyBox.innerHTML = "";
+
+    if (!bookings.length) {
+        emptyBox.textContent = `No bookings on ${dateKey} for the currently selected machine(s) — all hours are free.`;
+        emptyBox.classList.remove("d-none");
+        list.classList.add("d-none");
+        card.classList.remove("d-none");
+        if (shouldScroll) card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        return;
+    }
+
+    emptyBox.classList.add("d-none");
+    list.classList.remove("d-none");
+
     for (const b of bookings) {
         const li = document.createElement("li");
-        li.textContent =
-            `${b.equipment} [${b.time_label}] — ${b.user_name}` +
-            (b.experiment_details ? ` (${b.experiment_details})` : "");
+        li.className = "list-group-item px-0 d-flex justify-content-between align-items-center flex-wrap gap-2";
+
+        const left = document.createElement("div");
+        const devStrong = document.createElement("strong");
+        devStrong.textContent = b.equipment;
+        left.appendChild(devStrong);
+
+        const timeBadge = document.createElement("span");
+        timeBadge.className = (b.start_time && b.end_time)
+            ? "badge bg-info text-dark ms-2"
+            : "badge bg-success ms-2";
+        timeBadge.textContent = b.time_label;
+        left.appendChild(timeBadge);
+
+        const userSpan = document.createElement("span");
+        userSpan.className = "ms-2";
+        userSpan.textContent = `— ${b.user_name}` + (b.experiment_details ? ` (${b.experiment_details})` : "");
+        left.appendChild(userSpan);
+
+        li.appendChild(left);
         list.appendChild(li);
     }
 
@@ -230,10 +372,9 @@ function showDayDetail(dateKey, bookings, holidayName) {
         byDevice[b.equipment].push(b);
     }
 
-    hourlyBox.innerHTML = "";
     const heading = document.createElement("div");
     heading.className = "small fw-semibold text-muted mb-2";
-    heading.textContent = "Hourly Breakdown (00:00 – 23:00):";
+    heading.textContent = "Hourly Breakdown (00:00 – 23:00 — green cells are scheduled, white cells are free):";
     hourlyBox.appendChild(heading);
 
     const tableWrap = document.createElement("div");
@@ -245,13 +386,13 @@ function showDayDetail(dateKey, bookings, holidayName) {
     const thead = document.createElement("thead");
     const headRow = document.createElement("tr");
     const devTh = document.createElement("th");
-    devTh.textContent = "Device";
+    devTh.textContent = "Machine";
     devTh.className = "text-start";
     headRow.appendChild(devTh);
     for (let h = 0; h < 24; h++) {
         const th = document.createElement("th");
-        th.textContent = pad(h);
-        th.style.minWidth = "26px";
+        th.textContent = `${pad(h)}:00`;
+        th.style.minWidth = "40px";
         headRow.appendChild(th);
     }
     thead.appendChild(headRow);
@@ -277,7 +418,7 @@ function showDayDetail(dateKey, bookings, holidayName) {
             if (matching.length > 0) {
                 td.style.backgroundColor = "#28a745";
                 td.style.color = "#fff";
-                td.textContent = "●";
+                td.textContent = "✓";
                 td.title = matching.map(b => `${b.user_name} (${b.time_label})`).join(", ");
             } else {
                 td.style.backgroundColor = "#f8f9fa";
@@ -293,6 +434,35 @@ function showDayDetail(dateKey, bookings, holidayName) {
     hourlyBox.appendChild(tableWrap);
 
     card.classList.remove("d-none");
+    if (shouldScroll) {
+        card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+}
+
+document.getElementById("closeDayDetailBtn").addEventListener("click", () => {
+    document.getElementById("dayDetailCard").classList.add("d-none");
+    selectedDateKey = null;
+    renderCalendar();
+});
+
+document.querySelectorAll(".device-filter-cb").forEach(cb => {
+    cb.addEventListener("change", () => renderCalendar());
+});
+
+const selectAllBtn = document.getElementById("selectAllDevicesBtn");
+if (selectAllBtn) {
+    selectAllBtn.addEventListener("click", () => {
+        document.querySelectorAll(".device-filter-cb").forEach(cb => cb.checked = true);
+        renderCalendar();
+    });
+}
+
+const clearAllBtn = document.getElementById("clearAllDevicesBtn");
+if (clearAllBtn) {
+    clearAllBtn.addEventListener("click", () => {
+        document.querySelectorAll(".device-filter-cb").forEach(cb => cb.checked = false);
+        renderCalendar();
+    });
 }
 
 async function loadAndRender() {

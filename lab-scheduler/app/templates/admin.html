@@ -8,7 +8,7 @@
         <a href="/admin/settings" class="btn btn-sm btn-outline-secondary">⚙️ Admin Account Settings</a>
     </div>
 </div>
-<p class="text-muted">Rows highlighted in yellow have a detected conflict (same device + overlapping date & hours). Approve one side and deny the other.</p>
+<p class="text-muted">Rows highlighted in yellow have a detected conflict (same device + overlapping date & hours). Click <strong>Choose Winner</strong> to pick the one booking to keep — all other colliding requests will be denied automatically.</p>
 
 {% if admin_msg %}
 <div class="alert alert-success">{{ admin_msg }}</div>
@@ -52,19 +52,31 @@
                     {% if b.id in conflicts_by_id %}
                         <ul class="mb-0 ps-3">
                         {% for c in conflicts_by_id[b.id] %}
-                            <li>#{{ c.id }} {{ c.user_name }} ({{ c.start_date }}–{{ c.end_date }}, {{ c.time_label }}, {{ c.status }})</li>
+                            <li>
+                                #{{ c.id }} <strong>{{ c.user_name }}</strong>
+                                ({{ c.start_date }}–{{ c.end_date }}, {{ c.time_label }},
+                                <span class="badge {% if c.status == 'approved' %}bg-success{% else %}bg-warning text-dark{% endif %}">{{ c.status }}</span>)
+                            </li>
                         {% endfor %}
                         </ul>
                     {% else %}
                         <span class="text-muted">none</span>
                     {% endif %}
                 </td>
-                <td>
-                    <form method="post" action="/admin/bookings/{{ b.id }}/approve" class="d-inline">
-                        <button class="btn btn-sm btn-success" type="submit">Approve</button>
-                    </form>
+                <td class="text-nowrap">
+                    {% if b.id in conflicts_by_id %}
+                        <button type="button"
+                                class="btn btn-sm btn-warning fw-semibold open-conflict-modal-btn"
+                                data-booking-id="{{ b.id }}">
+                            ⚖️ Choose Winner ({{ conflicts_by_id[b.id]|length + 1 }} options)
+                        </button>
+                    {% else %}
+                        <form method="post" action="/admin/bookings/{{ b.id }}/approve" class="d-inline">
+                            <button class="btn btn-sm btn-success" type="submit">Approve</button>
+                        </form>
+                    {% endif %}
                     <form method="post" action="/admin/bookings/{{ b.id }}/deny" class="d-inline">
-                        <button class="btn btn-sm btn-danger" type="submit">Deny</button>
+                        <button class="btn btn-sm btn-outline-danger" type="submit">Deny</button>
                     </form>
                 </td>
             </tr>
@@ -117,10 +129,18 @@
                 <td>{{ b.user_name }}</td>
                 <td>{{ b.start_date }} → {{ b.end_date }}</td>
                 <td>{{ b.time_label }}</td>
-                <td>
-                    <form method="post" action="/admin/bookings/{{ b.id }}/approve" class="d-inline">
-                        <button class="btn btn-sm btn-outline-success" type="submit">Re-approve</button>
-                    </form>
+                <td class="text-nowrap">
+                    {% if b.id in denied_conflicts_by_id %}
+                        <button type="button"
+                                class="btn btn-sm btn-warning fw-semibold open-conflict-modal-btn"
+                                data-booking-id="{{ b.id }}">
+                            ⚖️ Re-approve (Choose Winner)
+                        </button>
+                    {% else %}
+                        <form method="post" action="/admin/bookings/{{ b.id }}/approve" class="d-inline">
+                            <button class="btn btn-sm btn-outline-success" type="submit">Re-approve</button>
+                        </form>
+                    {% endif %}
                     <form method="post" action="/admin/bookings/{{ b.id }}/delete" class="d-inline"
                           onsubmit="return confirm('Permanently delete this denied booking? This cannot be undone.');">
                         <button class="btn btn-sm btn-outline-dark" type="submit">Delete</button>
@@ -303,4 +323,136 @@
     </table>
 </div>
 {% endif %}
+
+<!-- --------------------------------------------------------------------- -->
+<!-- Interactive Conflict Resolution Modal Popup (Zero External JS Deps)   -->
+<!-- --------------------------------------------------------------------- -->
+<div id="conflictModalBackdrop"
+     class="d-none"
+     style="position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:1050; overflow-y:auto; padding:2rem 1rem;">
+    <div class="card shadow-lg mx-auto" style="max-width:680px; z-index:1055;">
+        <div class="card-header bg-warning text-dark d-flex justify-content-between align-items-center">
+            <h5 class="mb-0" id="conflictModalTitle">⚠️ Resolve Schedule Conflict — Choose ONE Winner</h5>
+            <button type="button" class="btn-close" id="closeConflictModalBtn" aria-label="Close"></button>
+        </div>
+        <form method="post" action="/admin/bookings/resolve-conflict" id="conflictResolveForm">
+            <div class="card-body">
+                <div class="alert alert-warning small mb-3">
+                    <strong>Only ONE of these colliding bookings can be booked.</strong>
+                    Pick the winning booking below — your chosen booking will be <strong>Approved</strong> and all other colliding option(s) will be <strong>automatically Denied</strong>.
+                </div>
+                <div id="conflictModalOptions" class="d-flex flex-column gap-2"></div>
+            </div>
+            <div class="card-footer d-flex justify-content-end gap-2 bg-light">
+                <button type="button" class="btn btn-outline-secondary btn-sm" id="cancelConflictModalBtn">Cancel</button>
+                <button type="submit" class="btn btn-success btn-sm fw-semibold" id="confirmWinnerBtn" disabled>
+                    ✅ Approve Selected Winner &amp; Deny Others
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+const CONFLICT_MODAL_OPTIONS = {{ conflict_modal_options | tojson }};
+const backdrop = document.getElementById("conflictModalBackdrop");
+const optionsContainer = document.getElementById("conflictModalOptions");
+const modalTitle = document.getElementById("conflictModalTitle");
+const confirmBtn = document.getElementById("confirmWinnerBtn");
+
+function closeConflictModal() {
+    backdrop.classList.add("d-none");
+    optionsContainer.innerHTML = "";
+    confirmBtn.disabled = true;
+}
+
+function openConflictModal(bookingId) {
+    const options = CONFLICT_MODAL_OPTIONS[String(bookingId)];
+    if (!options || !options.length) return;
+
+    modalTitle.textContent = `⚠️ Conflict on "${options[0].equipment}" — Choose ONE Booking to Keep`;
+    optionsContainer.innerHTML = "";
+    confirmBtn.disabled = true;
+
+    options.forEach((opt, idx) => {
+        const label = document.createElement("label");
+        label.className = "border rounded p-3 d-flex align-items-start gap-3 bg-white";
+        label.style.cursor = "pointer";
+
+        const radio = document.createElement("input");
+        radio.type = "radio";
+        radio.name = "winner_id";
+        radio.value = String(opt.id);
+        radio.className = "form-check-input mt-1";
+        radio.required = true;
+        radio.addEventListener("change", () => {
+            confirmBtn.disabled = false;
+            optionsContainer.querySelectorAll("label").forEach(l => {
+                l.classList.remove("border-success", "bg-success-subtle");
+            });
+            label.classList.add("border-success", "bg-success-subtle");
+        });
+
+        const info = document.createElement("div");
+        info.className = "flex-grow-1";
+
+        const topLine = document.createElement("div");
+        topLine.className = "d-flex justify-content-between align-items-center flex-wrap gap-2 mb-1";
+
+        const titleSpan = document.createElement("span");
+        titleSpan.innerHTML = `<strong>Option ${idx + 1}: #${opt.id} — ${escapeHtml(opt.user_name)}</strong>`;
+
+        const badge = document.createElement("span");
+        if (opt.status === "approved") {
+            badge.className = "badge bg-success";
+            badge.textContent = "Currently Approved";
+        } else if (opt.status === "pending") {
+            badge.className = "badge bg-warning text-dark";
+            badge.textContent = "Pending Request";
+        } else {
+            badge.className = "badge bg-secondary";
+            badge.textContent = "Previously Denied";
+        }
+        topLine.appendChild(titleSpan);
+        topLine.appendChild(badge);
+
+        const detailsLine = document.createElement("div");
+        detailsLine.className = "small text-dark";
+        detailsLine.textContent =
+            `Device: ${opt.equipment} | Dates: ${opt.start_date} → ${opt.end_date} | Hours: ${opt.time_label}`;
+
+        info.appendChild(topLine);
+        info.appendChild(detailsLine);
+
+        if (opt.experiment_details) {
+            const notes = document.createElement("div");
+            notes.className = "small text-muted mt-1";
+            notes.textContent = `Details: ${opt.experiment_details}`;
+            info.appendChild(notes);
+        }
+
+        label.appendChild(radio);
+        label.appendChild(info);
+        optionsContainer.appendChild(label);
+    });
+
+    backdrop.classList.remove("d-none");
+}
+
+function escapeHtml(text) {
+    const div = document.createElement("div");
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+document.querySelectorAll(".open-conflict-modal-btn").forEach(btn => {
+    btn.addEventListener("click", () => openConflictModal(btn.getAttribute("data-booking-id")));
+});
+
+document.getElementById("closeConflictModalBtn").addEventListener("click", closeConflictModal);
+document.getElementById("cancelConflictModalBtn").addEventListener("click", closeConflictModal);
+backdrop.addEventListener("click", (e) => {
+    if (e.target === backdrop) closeConflictModal();
+});
+</script>
 {% endblock %}

@@ -478,12 +478,17 @@ def dashboard(
         }
         for b in approved
     ]
+    registered_devices = [d.name for d in db.query(Device).order_by(Device.name).all()]
+    booked_devices = [b.equipment for b in approved]
+    filter_devices = sorted(set(registered_devices + booked_devices), key=str.lower)
+
     return templates.TemplateResponse(
         "dashboard.html",
         {
             "request": request,
             "bookings": approved,
             "bookings_json": bookings_json,
+            "filter_devices": filter_devices,
             "today": date.today(),
         },
     )
@@ -520,6 +525,19 @@ def history(
 # ---------------------------------------------------------------------------
 # Admin: conflict resolution, devices, users, and notification settings
 # ---------------------------------------------------------------------------
+def _serialize_booking_for_modal(b: models.Booking) -> dict:
+    return {
+        "id": b.id,
+        "equipment": b.equipment,
+        "user_name": b.user_name,
+        "start_date": b.start_date.isoformat(),
+        "end_date": b.end_date.isoformat(),
+        "time_label": b.time_label,
+        "experiment_details": b.experiment_details or "",
+        "status": b.status,
+    }
+
+
 @app.get("/admin")
 def admin_panel(
     request: Request,
@@ -549,6 +567,47 @@ def admin_panel(
         .limit(25)
         .all()
     )
+
+    # Also compute which denied bookings would collide with live bookings if re-approved
+    denied_conflicts_by_id: dict[int, list[models.Booking]] = {}
+    for b in denied:
+        c_list = conflict.find_conflicts(
+            db,
+            equipment=b.equipment,
+            start_date=b.start_date,
+            end_date=b.end_date,
+            start_time=b.start_time,
+            end_time=b.end_time,
+            exclude_id=b.id,
+            statuses=(models.STATUS_PENDING, models.STATUS_APPROVED),
+        )
+        if c_list:
+            denied_conflicts_by_id[b.id] = c_list
+
+    # Build JSON options map for the interactive Conflict Resolution Popup Modal
+    conflict_modal_options: dict[str, list[dict]] = {}
+    for b in pending:
+        if b.id in conflicts_by_id:
+            group = [b] + conflicts_by_id[b.id]
+            seen = set()
+            unique_group = []
+            for item in group:
+                if item.id not in seen:
+                    seen.add(item.id)
+                    unique_group.append(_serialize_booking_for_modal(item))
+            conflict_modal_options[str(b.id)] = unique_group
+
+    for b in denied:
+        if b.id in denied_conflicts_by_id:
+            group = [b] + denied_conflicts_by_id[b.id]
+            seen = set()
+            unique_group = []
+            for item in group:
+                if item.id not in seen:
+                    seen.add(item.id)
+                    unique_group.append(_serialize_booking_for_modal(item))
+            conflict_modal_options[str(b.id)] = unique_group
+
     users = db.query(User).order_by(User.username).all()
     devices = db.query(Device).order_by(Device.name).all()
     notif_cfg = notifications.get_notification_config(db)
@@ -561,6 +620,8 @@ def admin_panel(
             "approved": approved,
             "denied": denied,
             "conflicts_by_id": conflicts_by_id,
+            "denied_conflicts_by_id": denied_conflicts_by_id,
+            "conflict_modal_options": conflict_modal_options,
             "users": users,
             "devices": devices,
             "notif_cfg": notif_cfg,
@@ -920,6 +981,51 @@ def admin_settings_update(
     return resp
 
 
+def _approve_and_deny_conflicts(db: Session, winner: models.Booking) -> list[models.Booking]:
+    """
+    Approves `winner` and automatically denies every overlapping live booking
+    (pending or approved) on the same device & overlapping date/time, guaranteeing
+    no double-booking can ever exist.
+    """
+    overlapping = conflict.find_conflicts(
+        db,
+        equipment=winner.equipment,
+        start_date=winner.start_date,
+        end_date=winner.end_date,
+        start_time=winner.start_time,
+        end_time=winner.end_time,
+        exclude_id=winner.id,
+        statuses=(models.STATUS_PENDING, models.STATUS_APPROVED),
+    )
+    winner.status = models.STATUS_APPROVED
+    for other in overlapping:
+        other.status = models.STATUS_DENIED
+    db.commit()
+    return overlapping
+
+
+@app.post("/admin/bookings/resolve-conflict")
+def resolve_conflict_choice(
+    winner_id: int = Form(...),
+    db: Session = Depends(get_db),
+    _admin: str = Depends(require_admin),
+):
+    winner = db.query(models.Booking).get(winner_id)
+    if not winner:
+        raise HTTPException(status_code=404, detail="Chosen booking not found")
+    denied_others = _approve_and_deny_conflicts(db, winner)
+    if denied_others:
+        denied_summary = ", ".join(f"#{b.id} ({b.user_name})" for b in denied_others)
+        msg = (
+            f"Conflict resolved: Approved #{winner.id} ({winner.user_name} on {winner.equipment}, "
+            f"{winner.start_date}–{winner.end_date} {winner.time_label}) and automatically denied "
+            f"conflicting booking(s): {denied_summary}."
+        )
+    else:
+        msg = f"Approved #{winner.id} ({winner.user_name} on {winner.equipment})."
+    return RedirectResponse(url=f"/admin?msg={quote_plus(msg)}", status_code=303)
+
+
 @app.post("/admin/bookings/{booking_id}/approve")
 def approve_booking(
     booking_id: int,
@@ -929,8 +1035,14 @@ def approve_booking(
     booking = db.query(models.Booking).get(booking_id)
     if not booking:
         raise HTTPException(status_code=404, detail="Booking not found")
-    booking.status = models.STATUS_APPROVED
-    db.commit()
+    denied_others = _approve_and_deny_conflicts(db, booking)
+    if denied_others:
+        denied_summary = ", ".join(f"#{b.id} ({b.user_name})" for b in denied_others)
+        msg = (
+            f"Approved #{booking.id} ({booking.user_name}) and automatically denied "
+            f"conflicting booking(s): {denied_summary}."
+        )
+        return RedirectResponse(url=f"/admin?msg={quote_plus(msg)}", status_code=303)
     return RedirectResponse(url="/admin", status_code=303)
 
 
