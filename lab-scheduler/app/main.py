@@ -87,6 +87,14 @@ def _auto_migrate_schema() -> None:
             conn.execute(text("ALTER TABLE users ADD COLUMN is_manager BOOLEAN NOT NULL DEFAULT 0"))
             logger.info("Added is_manager column to users table.")
 
+        holiday_cols = {
+            row[1]
+            for row in conn.execute(text("PRAGMA table_info(holidays)")).fetchall()
+        }
+        if "is_deleted" not in holiday_cols:
+            conn.execute(text("ALTER TABLE holidays ADD COLUMN is_deleted BOOLEAN NOT NULL DEFAULT 0"))
+            logger.info("Added is_deleted column to holidays table.")
+
 
 _auto_migrate_schema()
 
@@ -1168,13 +1176,30 @@ def admin_holidays_page(
     end_d = date(selected_year, 12, 31)
     year_holidays = (
         db.query(Holiday)
-        .filter(Holiday.date >= start_d, Holiday.date <= end_d)
+        .filter(
+            Holiday.date >= start_d,
+            Holiday.date <= end_d,
+            Holiday.is_deleted == False,  # noqa: E712
+        )
+        .order_by(Holiday.date)
+        .all()
+    )
+    deleted_holidays = (
+        db.query(Holiday)
+        .filter(
+            Holiday.date >= start_d,
+            Holiday.date <= end_d,
+            Holiday.is_deleted == True,  # noqa: E712
+        )
         .order_by(Holiday.date)
         .all()
     )
 
-    # Summarize all years that currently have saved holidays
-    all_dates = [row[0] for row in db.query(Holiday.date).all()]
+    # Summarize all years that currently have active saved holidays
+    all_dates = [
+        row[0]
+        for row in db.query(Holiday.date).filter(Holiday.is_deleted == False).all()  # noqa: E712
+    ]
     year_counts: dict[int, int] = {}
     for d in all_dates:
         year_counts[d.year] = year_counts.get(d.year, 0) + 1
@@ -1187,6 +1212,7 @@ def admin_holidays_page(
             "current_year": current_year,
             "selected_year": selected_year,
             "holidays": year_holidays,
+            "deleted_holidays": deleted_holidays,
             "loaded_years": loaded_years,
             "msg": msg,
             "err": err,
@@ -1260,9 +1286,10 @@ def admin_holidays_add(
     if existing:
         existing.name = clean_name
         existing.source = "manual"
+        existing.is_deleted = False
         action_msg = f"Updated holiday on {holiday_date.isoformat()} to '{clean_name}'."
     else:
-        db.add(Holiday(date=holiday_date, name=clean_name, source="manual"))
+        db.add(Holiday(date=holiday_date, name=clean_name, source="manual", is_deleted=False))
         action_msg = f"Added holiday '{clean_name}' on {holiday_date.isoformat()}."
     db.commit()
     return RedirectResponse(
@@ -1309,10 +1336,30 @@ def admin_holidays_delete(
         raise HTTPException(status_code=404, detail="Holiday not found")
     hdate = row.date.isoformat()
     hname = row.name
-    db.delete(row)
+    # Soft-delete so future open-calendar imports never re-add this date
+    row.is_deleted = True
+    row.source = "manual"
     db.commit()
     return RedirectResponse(
-        url=f"/admin/holidays?year={year}&msg={quote_plus(f'Deleted holiday \"{hname}\" ({hdate}).')}",
+        url=f"/admin/holidays?year={year}&msg={quote_plus(f'Removed holiday \"{hname}\" ({hdate}). Future imports will keep this date excluded.')}",
+        status_code=303,
+    )
+
+
+@app.post("/admin/holidays/{holiday_id}/restore")
+def admin_holidays_restore(
+    holiday_id: int,
+    year: int = Form(...),
+    db: Session = Depends(get_db),
+    _actor: dict = Depends(require_manager_or_admin),
+):
+    row = db.query(Holiday).get(holiday_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Holiday not found")
+    row.is_deleted = False
+    db.commit()
+    return RedirectResponse(
+        url=f"/admin/holidays?year={year}&msg={quote_plus(f'Restored holiday \"{row.name}\" ({row.date.isoformat()}).')}",
         status_code=303,
     )
 

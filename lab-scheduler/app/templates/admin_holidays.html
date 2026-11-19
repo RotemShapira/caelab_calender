@@ -47,7 +47,8 @@
         <div class="card p-4 h-100">
             <h5 class="mb-2">🇮🇱 Import Open-Access Israeli Holidays (Current &amp; Future Years)</h5>
             <p class="text-muted small mb-3">
-                Pulls official Israeli public holidays from open-access calendars (Hebcal Israel / Nager.Date IL). Existing manual entries on the same dates are always preserved.
+                Pulls official Israeli public holidays from open-access calendars (Hebcal Israel / Nager.Date IL).
+                <strong>Safe merge:</strong> importing never deletes previous holidays, never overwrites manual edits, and never re-adds holidays you manually removed.
             </p>
             <div class="d-flex flex-wrap gap-2 mb-3">
                 <form method="post" action="/admin/holidays/sync" class="d-inline">
@@ -160,5 +161,38 @@
         </tbody>
     </table>
 </div>
+{% endif %}
+
+{% if deleted_holidays %}
+<details class="mt-4">
+    <summary class="small text-muted fw-semibold" style="cursor:pointer;">
+        Removed Holidays in {{ selected_year }} ({{ deleted_holidays|length }}) — kept excluded from future imports
+    </summary>
+    <div class="table-responsive mt-2">
+        <table class="table table-sm table-light align-middle mb-0">
+            <thead>
+                <tr>
+                    <th>Date</th>
+                    <th>Name</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for h in deleted_holidays %}
+                <tr>
+                    <td class="text-nowrap text-muted">{{ h.date.isoformat() }} ({{ h.date.strftime('%a') }})</td>
+                    <td class="text-muted text-decoration-line-through">{{ h.name }}</td>
+                    <td>
+                        <form method="post" action="/admin/holidays/{{ h.id }}/restore" class="d-inline">
+                            <input type="hidden" name="year" value="{{ selected_year }}">
+                            <button type="submit" class="btn btn-sm btn-outline-success py-0 px-2">Restore</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</details>
 {% endif %}
 {% endblock %}

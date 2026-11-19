@@ -117,7 +117,8 @@ def fetch_open_israeli_holidays(year: int) -> tuple[dict[str, str], str]:
 def sync_israeli_holidays_to_db(db: Session, year: int) -> tuple[int, int, str]:
     """
     Imports open-access Israeli holidays for `year` into the `holidays` table.
-    Preserves any existing manual/edited entries on the same date.
+    NEVER deletes existing holidays from any year, NEVER overwrites manual
+    edits/renames, and NEVER re-adds dates previously deleted (`is_deleted=True`).
     Returns (added_count, skipped_count, source_name).
     """
     fetched, source_name = fetch_open_israeli_holidays(year)
@@ -131,11 +132,13 @@ def sync_israeli_holidays_to_db(db: Session, year: int) -> tuple[int, int, str]:
             d = date.fromisoformat(iso_date)
         except ValueError:
             continue
+        # Check ALL rows (including manually edited and manually deleted rows)
+        # so an import never overwrites or resurrects manual changes.
         existing = db.query(Holiday).filter(Holiday.date == d).first()
         if existing is not None:
             skipped += 1
             continue
-        db.add(Holiday(date=d, name=name[:160], source="auto"))
+        db.add(Holiday(date=d, name=name[:160], source="auto", is_deleted=False))
         added += 1
 
     if added:
@@ -144,14 +147,18 @@ def sync_israeli_holidays_to_db(db: Session, year: int) -> tuple[int, int, str]:
 
 
 def get_holidays_for_year(db: Session, year: int) -> dict[str, str]:
-    """Return {'YYYY-MM-DD': 'Holiday Name'} from the database for `year`."""
+    """Return {'YYYY-MM-DD': 'Holiday Name'} of active (non-deleted) holidays for `year`."""
     if not (2020 <= year <= 2100):
         return {}
     start_d = date(year, 1, 1)
     end_d = date(year, 12, 31)
     rows = (
         db.query(Holiday)
-        .filter(Holiday.date >= start_d, Holiday.date <= end_d)
+        .filter(
+            Holiday.date >= start_d,
+            Holiday.date <= end_d,
+            Holiday.is_deleted == False,  # noqa: E712
+        )
         .order_by(Holiday.date)
         .all()
     )

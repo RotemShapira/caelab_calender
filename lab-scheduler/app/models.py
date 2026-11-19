@@ -141,6 +141,8 @@ class PotentiostatChannel(Base):
 class Holiday(Base):
     """
     Holidays shown on the schedule calendars.
+    `is_deleted=True` remembers holidays manually removed by Admin/Manager
+    so future open-calendar imports never re-add them or overwrite edits.
     """
     __tablename__ = "holidays"
 
@@ -148,6 +150,7 @@ class Holiday(Base):
     date = Column(Date, nullable=False, unique=True, index=True)
     name = Column(String(160), nullable=False)
     source = Column(String(30), nullable=False, default="manual")
+    is_deleted = Column(Boolean, default=False, nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
