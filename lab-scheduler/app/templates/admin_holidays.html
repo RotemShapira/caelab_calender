@@ -1,18 +1,37 @@
 {% extends "base.html" %}
-{% block title %}Admin: Holidays{% endblock %}
+{% block title %}Holidays Calendar Management{% endblock %}
 {% block content %}
-<div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+<div class="d-flex justify-content-between align-items-center flex-wrap gap-3 mb-3">
     <div>
-        <h3 class="mb-1">📅 Admin: Holiday Calendar Management</h3>
+        <h3 class="mb-1">📅 Holiday Calendar Management</h3>
         <p class="text-muted mb-0">
-            Import official Israeli holidays from an open-access calendar (no API key required), and manually add, rename, or remove holidays.
+            Import official Israeli holidays for the current year or any future years from open-access calendars (no API key required), and manually add, rename, or remove holidays.
         </p>
     </div>
-    <div class="d-flex align-items-center gap-2">
+    <div class="d-flex align-items-center flex-wrap gap-2">
         <a href="/admin/holidays?year={{ selected_year - 1 }}" class="btn btn-outline-secondary btn-sm">&laquo; {{ selected_year - 1 }}</a>
-        <span class="fw-bold px-2">{{ selected_year }}</span>
+        <form method="get" action="/admin/holidays" class="d-flex align-items-center gap-1 mb-0">
+            <input type="number" class="form-control form-control-sm text-center fw-bold" name="year"
+                   min="2020" max="2100" value="{{ selected_year }}" style="width: 90px;" title="Jump to any year">
+            <button type="submit" class="btn btn-sm btn-outline-primary">Go</button>
+        </form>
         <a href="/admin/holidays?year={{ selected_year + 1 }}" class="btn btn-outline-secondary btn-sm">{{ selected_year + 1 }} &raquo;</a>
     </div>
+</div>
+
+<!-- Loaded Years Quick-Jump Pills -->
+<div class="mb-3 d-flex align-items-center flex-wrap gap-2 small">
+    <span class="text-muted fw-semibold">Loaded holiday years:</span>
+    {% if not loaded_years %}
+        <span class="text-muted fst-italic">None yet</span>
+    {% else %}
+        {% for y, cnt in loaded_years %}
+        <a href="/admin/holidays?year={{ y }}"
+           class="btn btn-sm py-0 px-2 {% if y == selected_year %}btn-primary{% else %}btn-outline-secondary{% endif %}">
+            {{ y }} ({{ cnt }})
+        </a>
+        {% endfor %}
+    {% endif %}
 </div>
 
 {% if msg %}
@@ -23,28 +42,56 @@
 {% endif %}
 
 <div class="row g-4 mb-4">
-    <!-- Import from Open-Access Israeli Holidays Calendar -->
+    <!-- Import Current or Future Years from Open-Access Israeli Holidays Calendar -->
     <div class="col-lg-6">
         <div class="card p-4 h-100">
-            <h5 class="mb-2">🇮🇱 Import Open-Access Israeli Holidays</h5>
+            <h5 class="mb-2">🇮🇱 Import Open-Access Israeli Holidays (Current &amp; Future Years)</h5>
             <p class="text-muted small mb-3">
-                Automatically pulls official Israeli public holidays for <strong>{{ selected_year }}</strong> from open-access public holiday calendars (Hebcal Israel / Nager.Date IL). Existing manual entries on the same dates are preserved.
+                Pulls official Israeli public holidays from open-access calendars (Hebcal Israel / Nager.Date IL). Existing manual entries on the same dates are always preserved.
             </p>
-            <form method="post" action="/admin/holidays/sync">
-                <input type="hidden" name="year" value="{{ selected_year }}">
-                <button type="submit" class="btn btn-primary btn-sm">
-                    🔄 Import Israeli Holidays for {{ selected_year }}
-                </button>
+            <div class="d-flex flex-wrap gap-2 mb-3">
+                <form method="post" action="/admin/holidays/sync" class="d-inline">
+                    <input type="hidden" name="year" value="{{ selected_year }}">
+                    <button type="submit" class="btn btn-primary btn-sm">
+                        🔄 Import {{ selected_year }}
+                    </button>
+                </form>
+                <form method="post" action="/admin/holidays/sync" class="d-inline">
+                    <input type="hidden" name="year" value="{{ current_year }}">
+                    <input type="hidden" name="end_year" value="{{ current_year + 3 }}">
+                    <button type="submit" class="btn btn-outline-primary btn-sm">
+                        📆 Import {{ current_year }}–{{ current_year + 3 }} (Next 3 Years)
+                    </button>
+                </form>
+            </div>
+
+            <form method="post" action="/admin/holidays/sync" class="p-2 bg-light rounded border">
+                <div class="small fw-semibold text-muted mb-2">Or import any custom future year range (up to 10 years):</div>
+                <div class="row g-2 align-items-end">
+                    <div class="col-4">
+                        <label class="form-label small mb-1">From Year</label>
+                        <input type="number" class="form-control form-control-sm" name="year"
+                               min="2020" max="2100" value="{{ selected_year }}" required>
+                    </div>
+                    <div class="col-4">
+                        <label class="form-label small mb-1">To Year</label>
+                        <input type="number" class="form-control form-control-sm" name="end_year"
+                               min="2020" max="2100" value="{{ selected_year + 2 }}" required>
+                    </div>
+                    <div class="col-4">
+                        <button type="submit" class="btn btn-sm btn-primary w-100">Import Range</button>
+                    </div>
+                </div>
             </form>
         </div>
     </div>
 
-    <!-- Add or Override a Single Holiday Manually -->
+    <!-- Add or Override a Single Holiday Manually (any year) -->
     <div class="col-lg-6">
         <div class="card p-4 h-100">
-            <h5 class="mb-2">➕ Add / Update Holiday Manually</h5>
+            <h5 class="mb-2">➕ Add / Update Holiday Manually (Any Year)</h5>
             <p class="text-muted small mb-3">
-                Add Technion vacation days, lab maintenance days, or override any existing holiday name.
+                Add Technion vacation days, lab maintenance days, or override any holiday in <strong>{{ selected_year }}</strong> or any future year.
             </p>
             <form method="post" action="/admin/holidays/add">
                 <div class="row g-2">
@@ -69,7 +116,7 @@
 <h5>Holidays in {{ selected_year }} ({{ holidays|length }})</h5>
 {% if not holidays %}
     <div class="alert alert-info">
-        No holidays saved for {{ selected_year }} yet. Click <strong>Import Israeli Holidays for {{ selected_year }}</strong> above to load the open-access Israeli calendar, or add them manually.
+        No holidays saved for {{ selected_year }} yet. Click <strong>Import {{ selected_year }}</strong> above to load the open-access Israeli calendar, or add them manually.
     </div>
 {% else %}
 <div class="table-responsive">

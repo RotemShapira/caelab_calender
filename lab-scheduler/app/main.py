@@ -19,6 +19,7 @@ from .auth import (
     get_client_ip,
     get_current_session,
     require_admin,
+    require_manager_or_admin,
     require_user,
     verify_same_origin,
 )
@@ -77,6 +78,14 @@ def _auto_migrate_schema() -> None:
         if "channel_category" not in cols:
             conn.execute(text("ALTER TABLE bookings ADD COLUMN channel_category VARCHAR(20)"))
             logger.info("Added channel_category column to bookings table.")
+
+        user_cols = {
+            row[1]
+            for row in conn.execute(text("PRAGMA table_info(users)")).fetchall()
+        }
+        if "is_manager" not in user_cols:
+            conn.execute(text("ALTER TABLE users ADD COLUMN is_manager BOOLEAN NOT NULL DEFAULT 0"))
+            logger.info("Added is_manager column to users table.")
 
 
 _auto_migrate_schema()
@@ -289,8 +298,12 @@ def login_submit(
         )
 
     clear_failed_attempts(client_ip)
-    role = "admin" if admin_ok else "user"
-    matched_username = admin_rec.username if admin_ok else user_rec.username
+    if admin_ok:
+        role = "admin"
+        matched_username = admin_rec.username
+    else:
+        role = "manager" if user_rec.is_manager else "user"
+        matched_username = user_rec.username
     token = create_session_token(matched_username, role)
 
     is_https = request.headers.get("x-forwarded-proto", "").lower() == "https"
@@ -697,7 +710,7 @@ def potentiostats_dashboard(
 def history(
     request: Request,
     db: Session = Depends(get_db),
-    _admin: str = Depends(require_admin),
+    _actor: dict = Depends(require_manager_or_admin),
 ):
     bookings = (
         db.query(models.Booking)
@@ -740,7 +753,7 @@ def admin_panel(
     msg: str | None = None,
     err: str | None = None,
     db: Session = Depends(get_db),
-    _admin: str = Depends(require_admin),
+    actor: dict = Depends(require_manager_or_admin),
 ):
     conflicts_by_id = conflict.all_conflicting_bookings(db)
 
@@ -825,6 +838,8 @@ def admin_panel(
             "potentiostats": potentiostats,
             "pot_cat_labels": pot_cat_labels,
             "notif_cfg": notif_cfg,
+            "is_full_admin": actor["role"] == "admin",
+            "actor_username": actor["username"],
             "admin_msg": msg,
             "admin_err": err,
         },
@@ -1037,7 +1052,7 @@ def admin_create_user(
     username: str = Form(...),
     default_password: str = Form(...),
     db: Session = Depends(get_db),
-    _admin: str = Depends(require_admin),
+    _actor: dict = Depends(require_manager_or_admin),
 ):
     clean_username = username.strip()
     if not clean_username or len(clean_username) > 120:
@@ -1058,10 +1073,28 @@ def admin_create_user(
             status_code=303,
         )
 
-    db.add(User(username=clean_username, password_hash=hash_password(default_password)))
+    db.add(User(username=clean_username, password_hash=hash_password(default_password), is_manager=False))
     db.commit()
     return RedirectResponse(
         url=f"/admin?msg={quote_plus(f'Added lab user \"{clean_username}\".')}",
+        status_code=303,
+    )
+
+
+@app.post("/admin/users/{user_id}/toggle-manager")
+def admin_toggle_manager(
+    user_id: int,
+    db: Session = Depends(get_db),
+    _admin: str = Depends(require_admin),
+):
+    user = db.query(User).get(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    user.is_manager = not bool(user.is_manager)
+    db.commit()
+    status_label = "promoted to Lab Manager" if user.is_manager else "removed from Lab Manager role"
+    return RedirectResponse(
+        url=f"/admin?msg={quote_plus(f'User \"{user.username}\" was {status_label}.')}",
         status_code=303,
     )
 
@@ -1071,11 +1104,16 @@ def admin_reset_user_password(
     user_id: int,
     new_password: str = Form(...),
     db: Session = Depends(get_db),
-    _admin: str = Depends(require_admin),
+    actor: dict = Depends(require_manager_or_admin),
 ):
     user = db.query(User).get(user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    if actor["role"] == "manager" and user.is_manager:
+        return RedirectResponse(
+            url=f"/admin?err={quote_plus('Only the main Lab Admin can reset another Manager password.')}",
+            status_code=303,
+        )
     if len(new_password) < 4:
         return RedirectResponse(
             url=f"/admin?err={quote_plus('Password must be at least 4 characters.')}",
@@ -1093,11 +1131,16 @@ def admin_reset_user_password(
 def admin_delete_user(
     user_id: int,
     db: Session = Depends(get_db),
-    _admin: str = Depends(require_admin),
+    actor: dict = Depends(require_manager_or_admin),
 ):
     user = db.query(User).get(user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    if actor["role"] == "manager" and (user.is_manager or user.username == actor["username"]):
+        return RedirectResponse(
+            url=f"/admin?err={quote_plus('Only the main Lab Admin can delete a Lab Manager account.')}",
+            status_code=303,
+        )
     uname = user.username
     db.delete(user)
     db.commit()
@@ -1108,7 +1151,7 @@ def admin_delete_user(
 
 
 # ---------------------------------------------------------------------------
-# Admin-only Holidays Tab (/admin/holidays)
+# Admin & Manager Holidays Tab (/admin/holidays) — supports future years!
 # ---------------------------------------------------------------------------
 @app.get("/admin/holidays")
 def admin_holidays_page(
@@ -1117,9 +1160,10 @@ def admin_holidays_page(
     msg: str | None = None,
     err: str | None = None,
     db: Session = Depends(get_db),
-    _admin: str = Depends(require_admin),
+    _actor: dict = Depends(require_manager_or_admin),
 ):
-    selected_year = year if (year and 2020 <= year <= 2100) else date.today().year
+    current_year = date.today().year
+    selected_year = year if (year and 2020 <= year <= 2100) else current_year
     start_d = date(selected_year, 1, 1)
     end_d = date(selected_year, 12, 31)
     year_holidays = (
@@ -1128,12 +1172,22 @@ def admin_holidays_page(
         .order_by(Holiday.date)
         .all()
     )
+
+    # Summarize all years that currently have saved holidays
+    all_dates = [row[0] for row in db.query(Holiday.date).all()]
+    year_counts: dict[int, int] = {}
+    for d in all_dates:
+        year_counts[d.year] = year_counts.get(d.year, 0) + 1
+    loaded_years = sorted(year_counts.items())
+
     return templates.TemplateResponse(
         "admin_holidays.html",
         {
             "request": request,
+            "current_year": current_year,
             "selected_year": selected_year,
             "holidays": year_holidays,
+            "loaded_years": loaded_years,
             "msg": msg,
             "err": err,
         },
@@ -1143,23 +1197,44 @@ def admin_holidays_page(
 @app.post("/admin/holidays/sync")
 def admin_holidays_sync(
     year: int = Form(...),
+    end_year: int | None = Form(None),
     db: Session = Depends(get_db),
-    _admin: str = Depends(require_admin),
+    _actor: dict = Depends(require_manager_or_admin),
 ):
-    if not (2020 <= year <= 2100):
+    target_end = end_year if end_year is not None else year
+    if not (2020 <= year <= 2100) or not (2020 <= target_end <= 2100):
         return RedirectResponse(
-            url=f"/admin/holidays?err={quote_plus('Year must be between 2020 and 2100.')}",
+            url=f"/admin/holidays?err={quote_plus('Years must be between 2020 and 2100.')}",
             status_code=303,
         )
-    added, skipped, source_name = holidays.sync_israeli_holidays_to_db(db, year)
-    if source_name == "unavailable":
+    if target_end < year:
+        target_end = year
+    if target_end - year >= 10:
+        return RedirectResponse(
+            url=f"/admin/holidays?year={year}&err={quote_plus('You can import at most 10 years at once.')}",
+            status_code=303,
+        )
+
+    total_added = 0
+    total_skipped = 0
+    last_source = "unavailable"
+    for y in range(year, target_end + 1):
+        added, skipped, src = holidays.sync_israeli_holidays_to_db(db, y)
+        total_added += added
+        total_skipped += skipped
+        if src != "unavailable":
+            last_source = src
+
+    if last_source == "unavailable":
         return RedirectResponse(
             url=f"/admin/holidays?year={year}&err={quote_plus('Could not reach the open-access Israeli holiday calendars. Check internet access or add holidays manually.')}",
             status_code=303,
         )
+
+    year_label = f"{year}" if year == target_end else f"{year}–{target_end}"
     summary = (
-        f"Imported {added} holiday(s) for {year} from {source_name}"
-        + (f" ({skipped} existing date(s) kept unchanged)." if skipped else ".")
+        f"Imported {total_added} holiday(s) for {year_label} from {last_source}"
+        + (f" ({total_skipped} existing date(s) kept unchanged)." if total_skipped else ".")
     )
     return RedirectResponse(
         url=f"/admin/holidays?year={year}&msg={quote_plus(summary)}",
@@ -1172,7 +1247,7 @@ def admin_holidays_add(
     holiday_date: date = Form(...),
     name: str = Form(...),
     db: Session = Depends(get_db),
-    _admin: str = Depends(require_admin),
+    _actor: dict = Depends(require_manager_or_admin),
 ):
     clean_name = name.strip()
     year = holiday_date.year
@@ -1202,7 +1277,7 @@ def admin_holidays_edit(
     name: str = Form(...),
     year: int = Form(...),
     db: Session = Depends(get_db),
-    _admin: str = Depends(require_admin),
+    _actor: dict = Depends(require_manager_or_admin),
 ):
     row = db.query(Holiday).get(holiday_id)
     if not row:
@@ -1227,7 +1302,7 @@ def admin_holidays_delete(
     holiday_id: int,
     year: int = Form(...),
     db: Session = Depends(get_db),
-    _admin: str = Depends(require_admin),
+    _actor: dict = Depends(require_manager_or_admin),
 ):
     row = db.query(Holiday).get(holiday_id)
     if not row:
@@ -1331,7 +1406,7 @@ def _approve_and_deny_conflicts(db: Session, winner: models.Booking) -> list[mod
 def resolve_conflict_choice(
     winner_id: int = Form(...),
     db: Session = Depends(get_db),
-    _admin: str = Depends(require_admin),
+    _actor: dict = Depends(require_manager_or_admin),
 ):
     winner = db.query(models.Booking).get(winner_id)
     if not winner:
@@ -1353,7 +1428,7 @@ def resolve_conflict_choice(
 def approve_booking(
     booking_id: int,
     db: Session = Depends(get_db),
-    _admin: str = Depends(require_admin),
+    _actor: dict = Depends(require_manager_or_admin),
 ):
     booking = db.query(models.Booking).get(booking_id)
     if not booking:
@@ -1373,7 +1448,7 @@ def approve_booking(
 def deny_booking(
     booking_id: int,
     db: Session = Depends(get_db),
-    _admin: str = Depends(require_admin),
+    _actor: dict = Depends(require_manager_or_admin),
 ):
     booking = db.query(models.Booking).get(booking_id)
     if not booking:
@@ -1387,7 +1462,7 @@ def deny_booking(
 def delete_booking(
     booking_id: int,
     db: Session = Depends(get_db),
-    _admin: str = Depends(require_admin),
+    _actor: dict = Depends(require_manager_or_admin),
 ):
     booking = db.query(models.Booking).get(booking_id)
     if not booking:

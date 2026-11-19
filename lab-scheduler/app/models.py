@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Date, DateTime, Text, ForeignKey, UniqueConstraint
+from sqlalchemy import Boolean, Column, Integer, String, Date, DateTime, Text, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -76,13 +76,16 @@ class AdminCredential(Base):
 
 class User(Base):
     """
-    Lab member user accounts created and managed by the Admin from /admin.
+    Lab member user accounts created and managed by the Admin/Manager from /admin.
+    If `is_manager` is True (set only by the Admin), the user can resolve double
+    bookings, approve/deny requests, manage holidays, and add/remove lab members.
     """
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String(120), nullable=False, unique=True, index=True)
     password_hash = Column(String(255), nullable=False)
+    is_manager = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

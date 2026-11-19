@@ -1,11 +1,13 @@
 {% extends "base.html" %}
-{% block title %}Admin Panel{% endblock %}
+{% block title %}{% if is_full_admin %}Admin Panel{% else %}Lab Manager Panel{% endif %}{% endblock %}
 {% block content %}
 <div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-1">
-    <h3>🛠️ Admin: Booking Resolution & Lab Management</h3>
+    <h3>{% if is_full_admin %}🛠️ Admin: Booking Resolution &amp; Lab Management{% else %}🛠️ Lab Manager: Bookings, Users &amp; Holidays{% endif %}</h3>
     <div class="d-flex gap-2">
         <a href="/admin/holidays" class="btn btn-sm btn-outline-primary">📅 Manage Holidays</a>
+        {% if is_full_admin %}
         <a href="/admin/settings" class="btn btn-sm btn-outline-secondary">⚙️ Admin Account Settings</a>
+        {% endif %}
     </div>
 </div>
 <p class="text-muted">Rows highlighted in yellow have a detected conflict (same device + overlapping date & hours). Click <strong>Choose Winner</strong> to pick the one booking to keep — all other colliding requests will be denied automatically.</p>
@@ -155,6 +157,7 @@
 
 <hr class="my-4">
 
+{% if is_full_admin %}
 <!-- --------------------------------------------------------------------- -->
 <!-- Lab Devices Management (General Devices apart from Potentiostats)     -->
 <!-- --------------------------------------------------------------------- -->
@@ -378,6 +381,9 @@
             </form>
         </div>
     </div>
+{% else %}
+<div class="row g-4 mt-1">
+{% endif %}
 
     <div class="col-lg-6">
         <div class="card p-4 h-100">
@@ -412,6 +418,7 @@
         <thead>
             <tr>
                 <th>Username</th>
+                <th>Role</th>
                 <th>Reset to New Default Password</th>
                 <th>Action</th>
             </tr>
@@ -420,18 +427,40 @@
             {% for u in users %}
             <tr>
                 <td><strong>{{ u.username }}</strong></td>
+                <td class="text-nowrap">
+                    {% if u.is_manager %}
+                        <span class="badge bg-info text-dark">⭐ Lab Manager</span>
+                    {% else %}
+                        <span class="badge bg-light text-dark border">Lab Member</span>
+                    {% endif %}
+                </td>
                 <td>
+                    {% if is_full_admin or not u.is_manager %}
                     <form method="post" action="/admin/users/{{ u.id }}/reset-password" class="d-flex gap-2 align-items-center" style="max-width: 340px;">
                         <input type="text" class="form-control form-control-sm" name="new_password"
                                placeholder="New default password" required minlength="4">
                         <button type="submit" class="btn btn-sm btn-outline-primary text-nowrap">Set Password</button>
                     </form>
+                    {% else %}
+                    <span class="text-muted small">Managed by Admin</span>
+                    {% endif %}
                 </td>
-                <td>
+                <td class="text-nowrap">
+                    {% if is_full_admin %}
+                    <form method="post" action="/admin/users/{{ u.id }}/toggle-manager" class="d-inline">
+                        {% if u.is_manager %}
+                        <button type="submit" class="btn btn-sm btn-outline-secondary">Remove Manager</button>
+                        {% else %}
+                        <button type="submit" class="btn btn-sm btn-outline-info text-dark">⭐ Make Manager</button>
+                        {% endif %}
+                    </form>
+                    {% endif %}
+                    {% if is_full_admin or not u.is_manager %}
                     <form method="post" action="/admin/users/{{ u.id }}/delete" class="d-inline"
                           onsubmit="return confirm('Delete user {{ u.username }}?');">
                         <button type="submit" class="btn btn-sm btn-outline-danger">Delete User</button>
                     </form>
+                    {% endif %}
                 </td>
             </tr>
             {% endfor %}

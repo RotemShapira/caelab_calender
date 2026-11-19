@@ -63,8 +63,9 @@ def verify_same_origin(request: Request) -> None:
 
 def get_current_session(request: Request) -> dict | None:
     """
-    Returns {"username": str, "role": "user" | "admin"} if the request carries
-    a valid session cookie and the account still exists in the database.
+    Returns {"username": str, "role": "user" | "manager" | "admin"} if the
+    request carries a valid session cookie and the account still exists in DB.
+    Checks `User.is_manager` live so promotions/revocations apply immediately.
     """
     token = request.cookies.get(SESSION_COOKIE_NAME)
     payload = verify_session_token(token)
@@ -72,26 +73,30 @@ def get_current_session(request: Request) -> dict | None:
         return None
 
     username = payload.get("u")
-    role = payload.get("r")
-    if not username or role not in ("user", "admin"):
+    token_role = payload.get("r")
+    if not username or token_role not in ("user", "manager", "admin"):
         return None
 
     db = SessionLocal()
     try:
-        if role == "admin":
+        if token_role == "admin":
             exists = db.query(AdminCredential).filter(AdminCredential.username == username).first() is not None
+            if not exists:
+                return None
+            return {"username": username, "role": "admin"}
         else:
-            exists = db.query(User).filter(User.username == username).first() is not None
-        if not exists:
-            return None
-        return {"username": username, "role": role}
+            user = db.query(User).filter(User.username == username).first()
+            if user is None:
+                return None
+            live_role = "manager" if user.is_manager else "user"
+            return {"username": user.username, "role": live_role}
     finally:
         db.close()
 
 
 def require_user(request: Request) -> dict:
     """
-    Dependency that requires a signed-in Lab User (or Admin).
+    Dependency that requires any signed-in Lab User, Manager, or Admin.
     Redirects unauthenticated visitors to /login.
     """
     verify_same_origin(request)
@@ -101,21 +106,10 @@ def require_user(request: Request) -> dict:
     return session
 
 
-def require_admin(
+def _verify_basic_admin(
     request: Request,
-    credentials: HTTPBasicCredentials | None = Depends(security_basic),
+    credentials: HTTPBasicCredentials | None,
 ) -> str:
-    """
-    Protects admin routes. Accepts either an active Admin session cookie
-    (from logging in at /login with the admin account) OR HTTP Basic Auth,
-    with brute-force rate limiting and constant-time password checks.
-    """
-    verify_same_origin(request)
-
-    session = get_current_session(request)
-    if session and session["role"] == "admin":
-        return session["username"]
-
     client_ip = get_client_ip(request)
     if is_rate_limited(client_ip):
         raise HTTPException(
@@ -149,3 +143,43 @@ def require_admin(
         return credentials.username
     finally:
         db.close()
+
+
+def require_manager_or_admin(
+    request: Request,
+    credentials: HTTPBasicCredentials | None = Depends(security_basic),
+) -> dict:
+    """
+    Allows either a full Admin OR a Lab Manager (user with `is_manager=True`).
+    Returns {"username": str, "role": "admin" | "manager"}.
+    """
+    verify_same_origin(request)
+
+    session = get_current_session(request)
+    if session and session["role"] in ("admin", "manager"):
+        return session
+
+    admin_user = _verify_basic_admin(request, credentials)
+    return {"username": admin_user, "role": "admin"}
+
+
+def require_admin(
+    request: Request,
+    credentials: HTTPBasicCredentials | None = Depends(security_basic),
+) -> str:
+    """
+    Strictly allows ONLY the full Admin (via Admin session cookie or HTTP Basic Auth).
+    """
+    verify_same_origin(request)
+
+    session = get_current_session(request)
+    if session and session["role"] == "admin":
+        return session["username"]
+
+    if session and session["role"] == "manager":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This action is restricted to the main Lab Admin.",
+        )
+
+    return _verify_basic_admin(request, credentials)
