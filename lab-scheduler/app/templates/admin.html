@@ -1,11 +1,14 @@
 {% extends "base.html" %}
 {% block title %}Admin Panel{% endblock %}
 {% block content %}
-<div class="d-flex justify-content-between align-items-start mb-1">
+<div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-1">
     <h3>🛠️ Admin: Booking Resolution & Lab Management</h3>
-    <a href="/admin/settings" class="btn btn-sm btn-outline-secondary">⚙️ Admin Account Settings</a>
+    <div class="d-flex gap-2">
+        <a href="/admin/holidays" class="btn btn-sm btn-outline-primary">📅 Manage Holidays</a>
+        <a href="/admin/settings" class="btn btn-sm btn-outline-secondary">⚙️ Admin Account Settings</a>
+    </div>
 </div>
-<p class="text-muted">Rows highlighted in yellow have a detected conflict. Approve one side and deny the other.</p>
+<p class="text-muted">Rows highlighted in yellow have a detected conflict (same device + overlapping date & hours). Approve one side and deny the other.</p>
 
 {% if admin_msg %}
 <div class="alert alert-success">{{ admin_msg }}</div>
@@ -26,9 +29,9 @@
         <thead>
             <tr>
                 <th>#</th>
-                <th>Equipment</th>
+                <th>Device</th>
                 <th>User</th>
-                <th>Dates</th>
+                <th>Dates & Hours</th>
                 <th>Details</th>
                 <th>Conflicts With</th>
                 <th>Action</th>
@@ -38,15 +41,18 @@
             {% for b in pending %}
             <tr class="{% if b.id in conflicts_by_id %}conflict-row{% endif %}">
                 <td>{{ b.id }}</td>
-                <td>{{ b.equipment }}</td>
+                <td><strong>{{ b.equipment }}</strong></td>
                 <td>{{ b.user_name }}</td>
-                <td>{{ b.start_date }} → {{ b.end_date }}</td>
+                <td>
+                    {{ b.start_date }} → {{ b.end_date }}<br>
+                    <span class="badge bg-light text-dark border">{{ b.time_label }}</span>
+                </td>
                 <td>{{ b.experiment_details or "—" }}</td>
                 <td>
                     {% if b.id in conflicts_by_id %}
                         <ul class="mb-0 ps-3">
                         {% for c in conflicts_by_id[b.id] %}
-                            <li>#{{ c.id }} {{ c.user_name }} ({{ c.start_date }}–{{ c.end_date }}, {{ c.status }})</li>
+                            <li>#{{ c.id }} {{ c.user_name }} ({{ c.start_date }}–{{ c.end_date }}, {{ c.time_label }}, {{ c.status }})</li>
                         {% endfor %}
                         </ul>
                     {% else %}
@@ -74,7 +80,7 @@
 {% else %}
 <div class="table-responsive mb-4">
     <table class="table table-sm align-middle mb-0">
-        <thead><tr><th>#</th><th>Equipment</th><th>User</th><th>Dates</th><th>Action</th></tr></thead>
+        <thead><tr><th>#</th><th>Device</th><th>User</th><th>Dates</th><th>Hours</th><th>Action</th></tr></thead>
         <tbody>
             {% for b in approved %}
             <tr>
@@ -82,6 +88,7 @@
                 <td>{{ b.equipment }}</td>
                 <td>{{ b.user_name }}</td>
                 <td>{{ b.start_date }} → {{ b.end_date }}</td>
+                <td>{{ b.time_label }}</td>
                 <td>
                     <form method="post" action="/admin/bookings/{{ b.id }}/deny" class="d-inline">
                         <button class="btn btn-sm btn-outline-danger" type="submit">Revoke / Deny</button>
@@ -101,7 +108,7 @@
 {% else %}
 <div class="table-responsive mb-4">
     <table class="table table-sm table-secondary align-middle mb-0">
-        <thead><tr><th>#</th><th>Equipment</th><th>User</th><th>Dates</th><th>Action</th></tr></thead>
+        <thead><tr><th>#</th><th>Device</th><th>User</th><th>Dates</th><th>Hours</th><th>Action</th></tr></thead>
         <tbody>
             {% for b in denied %}
             <tr>
@@ -109,6 +116,7 @@
                 <td>{{ b.equipment }}</td>
                 <td>{{ b.user_name }}</td>
                 <td>{{ b.start_date }} → {{ b.end_date }}</td>
+                <td>{{ b.time_label }}</td>
                 <td>
                     <form method="post" action="/admin/bookings/{{ b.id }}/approve" class="d-inline">
                         <button class="btn btn-sm btn-outline-success" type="submit">Re-approve</button>
@@ -128,15 +136,54 @@
 <hr class="my-4">
 
 <!-- --------------------------------------------------------------------- -->
-<!-- Schedule Collision Notification Email Settings                        -->
+<!-- Lab Devices Management (Add / Remove Devices for Dropdown)            -->
+<!-- --------------------------------------------------------------------- -->
+<div class="card p-4 mb-4">
+    <h5 class="mb-2">🔬 Lab Devices List</h5>
+    <p class="text-muted small mb-3">
+        Devices listed here appear in the <strong>Device / Equipment</strong> dropdown on the booking form.
+        Schedule conflicts only happen when two bookings pick the <strong>same device</strong> and overlapping times.
+    </p>
+    <form method="post" action="/admin/devices/create" class="d-flex gap-2 mb-3" style="max-width: 520px;">
+        <input type="text" class="form-control form-control-sm" name="name" required maxlength="120"
+               placeholder="e.g. XRD Machine, Fume Hood 2, Rig A">
+        <button type="submit" class="btn btn-sm btn-success text-nowrap">➕ Add Device</button>
+    </form>
+
+    {% if not devices %}
+        <div class="alert alert-warning mb-0 py-2 small">No devices added yet. Add at least one device above so lab members can book it.</div>
+    {% else %}
+        <div class="d-flex flex-wrap gap-2">
+            {% for d in devices %}
+            <div class="border rounded px-3 py-1 bg-light d-flex align-items-center gap-2">
+                <span class="fw-semibold">{{ d.name }}</span>
+                <form method="post" action="/admin/devices/{{ d.id }}/delete" class="d-inline mb-0"
+                      onsubmit="return confirm('Remove device {{ d.name }} from the dropdown list? Existing bookings remain intact.');">
+                    <button type="submit" class="btn btn-sm btn-outline-danger py-0 px-2" title="Remove device">&times;</button>
+                </form>
+            </div>
+            {% endfor %}
+        </div>
+    {% endif %}
+</div>
+
+<!-- --------------------------------------------------------------------- -->
+<!-- Schedule Collision Notification Email & Lab Users Management          -->
 <!-- --------------------------------------------------------------------- -->
 <div class="row g-4 mt-1">
     <div class="col-lg-6">
         <div class="card p-4 h-100">
             <h5 class="mb-2">📧 Schedule Collision Email Notification</h5>
             <p class="text-muted small mb-3">
-                Set the email address(es) that will receive an automatic alert whenever a newly submitted booking collides with an existing booking.
+                Set who receives an email alert when a schedule collision occurs, plus the outgoing SMTP account that sends the email.
             </p>
+
+            {% if notif_cfg.notify_email_to and not notif_cfg.smtp_host %}
+            <div class="alert alert-warning small py-2">
+                <strong>Outgoing SMTP server is not configured yet!</strong> Entering a recipient email alone cannot send emails until you also fill in the <em>Outgoing SMTP Server Settings</em> below (e.g., Gmail: <code>smtp.gmail.com</code>, port <code>587</code>, your Gmail address, and a 16-character Google App Password).
+            </div>
+            {% endif %}
+
             <form method="post" action="/admin/notifications">
                 <div class="mb-3">
                     <label class="form-label">Recipient Email Address(es)</label>
@@ -145,13 +192,13 @@
                            value="{{ notif_cfg.notify_email_to or '' }}">
                 </div>
 
-                <details class="mb-3">
-                    <summary class="small text-secondary" style="cursor:pointer;">
-                        Outgoing SMTP Server Settings
+                <details class="mb-3" {% if not notif_cfg.smtp_host %}open{% endif %}>
+                    <summary class="small text-secondary fw-semibold" style="cursor:pointer;">
+                        Outgoing SMTP Server Settings (Required to Send Emails)
                         {% if notif_cfg.smtp_host %}
                             <span class="badge bg-success ms-1">Configured ({{ notif_cfg.smtp_host }})</span>
                         {% else %}
-                            <span class="badge bg-secondary ms-1">Not set yet</span>
+                            <span class="badge bg-warning text-dark ms-1">Required</span>
                         {% endif %}
                     </summary>
                     <div class="mt-2 p-3 bg-light rounded border">
@@ -159,7 +206,7 @@
                             <div class="col-8">
                                 <label class="form-label small mb-1">SMTP Host</label>
                                 <input type="text" class="form-control form-control-sm" name="smtp_host"
-                                       placeholder="e.g. smtp.gmail.com" value="{{ notif_cfg.smtp_host or '' }}">
+                                       placeholder="smtp.gmail.com" value="{{ notif_cfg.smtp_host or '' }}">
                             </div>
                             <div class="col-4">
                                 <label class="form-label small mb-1">SMTP Port</label>
@@ -167,37 +214,40 @@
                                        value="{{ notif_cfg.smtp_port or '587' }}">
                             </div>
                             <div class="col-6">
-                                <label class="form-label small mb-1">SMTP Username</label>
+                                <label class="form-label small mb-1">Sender Email (SMTP User)</label>
                                 <input type="text" class="form-control form-control-sm" name="smtp_user"
-                                       placeholder="sender@gmail.com" value="{{ notif_cfg.smtp_user or '' }}">
+                                       placeholder="your-email@gmail.com" value="{{ notif_cfg.smtp_user or '' }}">
                             </div>
                             <div class="col-6">
                                 <label class="form-label small mb-1">SMTP App Password</label>
                                 <input type="password" class="form-control form-control-sm" name="smtp_password"
-                                       placeholder="{% if notif_cfg.smtp_password %}•••••••• (saved){% else %}App password{% endif %}">
+                                       placeholder="{% if notif_cfg.smtp_password %}•••••••• (saved){% else %}16-char App Password{% endif %}">
                             </div>
                             <div class="col-12">
                                 <label class="form-label small mb-1">From Address (optional)</label>
                                 <input type="text" class="form-control form-control-sm" name="smtp_from"
-                                       placeholder="Defaults to SMTP Username" value="{{ notif_cfg.smtp_from or '' }}">
+                                       placeholder="Defaults to Sender Email" value="{{ notif_cfg.smtp_from or '' }}">
                             </div>
+                        </div>
+                        <div class="form-text mt-2">
+                            Using Gmail? Enable 2-Step Verification on your Google account, create an <strong>App Password</strong> at <code>myaccount.google.com/apppasswords</code>, and paste that 16-character password above.
                         </div>
                     </div>
                 </details>
 
-                <button type="submit" class="btn btn-primary btn-sm">Save Notification Settings</button>
+                <div class="d-flex gap-2">
+                    <button type="submit" class="btn btn-primary btn-sm">Save Notification Settings</button>
+                    <button type="submit" formaction="/admin/notifications/test" class="btn btn-outline-secondary btn-sm">✉️ Send Test Email</button>
+                </div>
             </form>
         </div>
     </div>
 
-    <!-- ----------------------------------------------------------------- -->
-    <!-- Lab Users Management (Add User + Set Default Password)            -->
-    <!-- ----------------------------------------------------------------- -->
     <div class="col-lg-6">
         <div class="card p-4 h-100">
             <h5 class="mb-2">👥 Add Lab User</h5>
             <p class="text-muted small mb-3">
-                Create a login account for a lab member with a default password. They can change their password after signing in.
+                Create a login account for a lab member with a default password. All registered users also appear in the <strong>Your Name</strong> dropdown on the booking form.
             </p>
             <form method="post" action="/admin/users/create">
                 <div class="mb-3">

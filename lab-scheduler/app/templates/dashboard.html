@@ -2,7 +2,7 @@
 {% block title %}Schedule Dashboard{% endblock %}
 {% block content %}
 <h3 class="mb-3">📅 Approved Lab Schedule</h3>
-<p class="text-muted">Finalized, conflict-free bookings only. Pending or denied requests are not shown here.</p>
+<p class="text-muted">Finalized, conflict-free bookings only. Click any booked day to view its hourly breakdown.</p>
 
 <div class="card p-3 mb-4">
     <div class="d-flex justify-content-between align-items-center mb-3">
@@ -21,19 +21,21 @@
     </table>
 
     <div class="mt-3 small text-muted d-flex flex-wrap gap-3 align-items-center">
-        <span><span class="badge" style="background-color:#28a745;">&nbsp;&nbsp;</span> Booked</span>
-        <span><span class="badge" style="background-color:#fd7e14;">&nbsp;&nbsp;</span> Booked (weekend)</span>
-        <span><span class="badge" style="background-color:#dc3545;">&nbsp;&nbsp;</span> Booked (holiday)</span>
+        <span><span class="badge" style="background-color:#28a745;">&nbsp;&nbsp;</span> Booked (All Day)</span>
+        <span><span class="badge" style="background-color:#20c997;">&nbsp;&nbsp;</span> Booked (Partial Hours 🕒)</span>
+        <span><span class="badge" style="background-color:#fd7e14;">&nbsp;&nbsp;</span> Booked (Weekend)</span>
+        <span><span class="badge" style="background-color:#dc3545;">&nbsp;&nbsp;</span> Booked (Holiday)</span>
         <span><span class="badge" style="background-color:#dbe9f6;color:#000;border:1px solid #ccc;">&nbsp;&nbsp;</span> Weekend (Fri/Sat)</span>
         <span><span class="badge" style="background-color:#e8daef;color:#000;border:1px solid #ccc;">&nbsp;&nbsp;</span> Holiday</span>
         <span><span class="badge bg-light text-dark border">&nbsp;&nbsp;</span> Free</span>
     </div>
 </div>
 
-<!-- Day detail panel, filled in by JS when a green day is clicked -->
+<!-- Day detail + Hourly Breakdown panel, filled in by JS when a day is clicked -->
 <div class="card p-3 mb-4 d-none" id="dayDetailCard">
     <h6 id="dayDetailTitle" class="mb-2"></h6>
-    <ul class="mb-0" id="dayDetailList"></ul>
+    <ul class="mb-3" id="dayDetailList"></ul>
+    <div id="hourlyBreakdownContainer"></div>
 </div>
 
 <h5 class="mt-4">Full Listing</h5>
@@ -44,10 +46,11 @@
     <table class="table table-hover align-middle mb-0">
         <thead>
             <tr>
-                <th>Equipment</th>
+                <th>Device</th>
                 <th>Booked By</th>
                 <th>Start</th>
                 <th>End</th>
+                <th>Hours</th>
                 <th>Details</th>
                 <th>Status</th>
             </tr>
@@ -59,6 +62,13 @@
                 <td>{{ b.user_name }}</td>
                 <td>{{ b.start_date }}</td>
                 <td>{{ b.end_date }}</td>
+                <td>
+                    {% if b.start_time and b.end_time %}
+                        <span class="badge bg-info text-dark">{{ b.time_label }}</span>
+                    {% else %}
+                        <span class="badge bg-light text-dark border">All Day</span>
+                    {% endif %}
+                </td>
                 <td>{{ b.experiment_details or "—" }}</td>
                 <td>
                     {% if b.end_date < today %}
@@ -77,22 +87,18 @@
 {% endif %}
 
 <script>
-// Approved bookings passed from the server (dates as "YYYY-MM-DD" strings).
 const APPROVED_BOOKINGS = {{ bookings_json | tojson }};
 
-// Build a map of "YYYY-MM-DD" -> [bookings on that day] for fast lookup.
 function buildDayMap(bookings) {
     const map = {};
     for (const b of bookings) {
         let cur = new Date(b.start_date + "T00:00:00");
         const end = new Date(b.end_date + "T00:00:00");
         while (cur <= end) {
-            // FIX: Extract the local year, month, and day to prevent UTC shifting
             const year = cur.getFullYear();
             const month = String(cur.getMonth() + 1).padStart(2, '0');
             const day = String(cur.getDate()).padStart(2, '0');
             const key = `${year}-${month}-${day}`;
-            
             if (!map[key]) map[key] = [];
             map[key].push(b);
             cur.setDate(cur.getDate() + 1);
@@ -102,9 +108,6 @@ function buildDayMap(bookings) {
 }
 const DAY_MAP = buildDayMap(APPROVED_BOOKINGS);
 
-// Israeli public holidays, fetched from the backend (which pulls them from
-// Google Calendar). Cached client-side per year to avoid refetching on
-// every month click within the same year.
 const HOLIDAYS_CACHE = {}; // year -> {"YYYY-MM-DD": "Holiday Name"}
 
 async function ensureHolidaysLoaded(year) {
@@ -121,7 +124,7 @@ async function ensureHolidaysLoaded(year) {
 const MONTH_NAMES = ["January","February","March","April","May","June",
                       "July","August","September","October","November","December"];
 
-let viewYear, viewMonth; // viewMonth is 0-indexed
+let viewYear, viewMonth;
 (function initToToday() {
     const t = new Date();
     viewYear = t.getFullYear();
@@ -130,12 +133,18 @@ let viewYear, viewMonth; // viewMonth is 0-indexed
 
 function pad(n) { return n < 10 ? "0" + n : "" + n; }
 
+function timeToMinutes(t, fallback) {
+    if (!t) return fallback;
+    const parts = t.split(":");
+    return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
+}
+
 function renderCalendar() {
     document.getElementById("calendarMonthLabel").textContent =
         MONTH_NAMES[viewMonth] + " " + viewYear;
 
     const firstDay = new Date(viewYear, viewMonth, 1);
-    const startWeekday = firstDay.getDay(); // 0=Sun
+    const startWeekday = firstDay.getDay();
     const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
 
     const body = document.getElementById("calendarBody");
@@ -149,19 +158,20 @@ function renderCalendar() {
     for (let day = 1; day <= daysInMonth; day++) {
         const key = viewYear + "-" + pad(viewMonth + 1) + "-" + pad(day);
         const cell = document.createElement("td");
-        cell.textContent = day;
 
-        const weekday = new Date(viewYear, viewMonth, day).getDay(); // 0=Sun ... 6=Sat
-        const isWeekend = (weekday === 5 || weekday === 6); // Israeli weekend: Fri + Sat
+        const weekday = new Date(viewYear, viewMonth, day).getDay();
+        const isWeekend = (weekday === 5 || weekday === 6);
         const holidayName = (HOLIDAYS_CACHE[viewYear] || {})[key];
         const isHoliday = !!holidayName;
-        const isBooked = !!DAY_MAP[key];
+        const dayBookings = DAY_MAP[key] || [];
+        const isBooked = dayBookings.length > 0;
+        const hasAllDay = dayBookings.some(b => !b.start_time || !b.end_time);
+        const isPartialOnly = isBooked && !hasAllDay;
 
-        // Priority when booked: holiday > weekend > ordinary.
-        // When free: holiday shading > weekend shading > plain.
         let bg = null, fg = "#000";
         if (isBooked && isHoliday) { bg = "#dc3545"; fg = "#fff"; }
         else if (isBooked && isWeekend) { bg = "#fd7e14"; fg = "#fff"; }
+        else if (isPartialOnly) { bg = "#20c997"; fg = "#fff"; }
         else if (isBooked) { bg = "#28a745"; fg = "#fff"; }
         else if (isHoliday) { bg = "#e8daef"; }
         else if (isWeekend) { bg = "#dbe9f6"; }
@@ -171,12 +181,16 @@ function renderCalendar() {
             cell.style.color = fg;
         }
 
+        cell.textContent = isPartialOnly ? `${day} 🕒` : `${day}`;
+
         const tooltipParts = [];
         if (isHoliday) tooltipParts.push(holidayName);
         if (isBooked) {
             cell.style.cursor = "pointer";
-            cell.addEventListener("click", () => showDayDetail(key, DAY_MAP[key]));
-            tooltipParts.push(DAY_MAP[key].map(b => b.equipment + " — " + b.user_name).join(", "));
+            cell.addEventListener("click", () => showDayDetail(key, dayBookings, holidayName));
+            tooltipParts.push(
+                dayBookings.map(b => `${b.equipment} (${b.time_label}) — ${b.user_name}`).join(", ")
+            );
         }
         if (tooltipParts.length) cell.title = tooltipParts.join(" | ");
 
@@ -193,19 +207,91 @@ function renderCalendar() {
     }
 }
 
-function showDayDetail(dateKey, bookings) {
+function showDayDetail(dateKey, bookings, holidayName) {
     const card = document.getElementById("dayDetailCard");
     const title = document.getElementById("dayDetailTitle");
     const list = document.getElementById("dayDetailList");
+    const hourlyBox = document.getElementById("hourlyBreakdownContainer");
 
-    title.textContent = "Bookings on " + dateKey;
+    title.textContent = "Schedule for " + dateKey + (holidayName ? " (" + holidayName + ")" : "");
     list.innerHTML = "";
     for (const b of bookings) {
         const li = document.createElement("li");
-        li.textContent = b.equipment + " — " + b.user_name +
-            (b.experiment_details ? " (" + b.experiment_details + ")" : "");
+        li.textContent =
+            `${b.equipment} [${b.time_label}] — ${b.user_name}` +
+            (b.experiment_details ? ` (${b.experiment_details})` : "");
         list.appendChild(li);
     }
+
+    // Group bookings by device and render a 24-hour slot grid (00:00 - 23:00)
+    const byDevice = {};
+    for (const b of bookings) {
+        if (!byDevice[b.equipment]) byDevice[b.equipment] = [];
+        byDevice[b.equipment].push(b);
+    }
+
+    hourlyBox.innerHTML = "";
+    const heading = document.createElement("div");
+    heading.className = "small fw-semibold text-muted mb-2";
+    heading.textContent = "Hourly Breakdown (00:00 – 23:00):";
+    hourlyBox.appendChild(heading);
+
+    const tableWrap = document.createElement("div");
+    tableWrap.className = "table-responsive";
+    const tbl = document.createElement("table");
+    tbl.className = "table table-sm table-bordered text-center mb-0";
+    tbl.style.fontSize = "0.75rem";
+
+    const thead = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    const devTh = document.createElement("th");
+    devTh.textContent = "Device";
+    devTh.className = "text-start";
+    headRow.appendChild(devTh);
+    for (let h = 0; h < 24; h++) {
+        const th = document.createElement("th");
+        th.textContent = pad(h);
+        th.style.minWidth = "26px";
+        headRow.appendChild(th);
+    }
+    thead.appendChild(headRow);
+    tbl.appendChild(thead);
+
+    const tbody = document.createElement("tbody");
+    for (const [device, devBookings] of Object.entries(byDevice)) {
+        const tr = document.createElement("tr");
+        const nameTd = document.createElement("td");
+        nameTd.className = "text-start fw-semibold text-nowrap";
+        nameTd.textContent = device;
+        tr.appendChild(nameTd);
+
+        for (let h = 0; h < 24; h++) {
+            const slotStart = h * 60;
+            const slotEnd = (h + 1) * 60;
+            const matching = devBookings.filter(b => {
+                const bs = timeToMinutes(b.start_time, 0);
+                const be = timeToMinutes(b.end_time, 24 * 60);
+                return bs < slotEnd && be > slotStart;
+            });
+            const td = document.createElement("td");
+            if (matching.length > 0) {
+                td.style.backgroundColor = "#28a745";
+                td.style.color = "#fff";
+                td.textContent = "●";
+                td.title = matching.map(b => `${b.user_name} (${b.time_label})`).join(", ");
+            } else {
+                td.style.backgroundColor = "#f8f9fa";
+                td.textContent = "";
+                td.title = `${pad(h)}:00–${pad(h + 1)}:00 Free`;
+            }
+            tr.appendChild(td);
+        }
+        tbody.appendChild(tr);
+    }
+    tbl.appendChild(tbody);
+    tableWrap.appendChild(tbl);
+    hourlyBox.appendChild(tableWrap);
+
     card.classList.remove("d-none");
 }
 

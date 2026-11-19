@@ -8,11 +8,11 @@
                 <div class="alert alert-warning">
                     <h4 class="alert-heading">⚠️ Conflict Detected</h4>
                     <p>Your request for <strong>{{ booking.equipment }}</strong>
-                       ({{ booking.start_date }} to {{ booking.end_date }}) overlaps with
+                       ({{ booking.start_date }} to {{ booking.end_date }}, <strong>{{ booking.time_label }}</strong>) overlaps with
                        {{ conflicts|length }} existing request(s):</p>
                     <ul class="mb-2">
                         {% for c in conflicts %}
-                        <li>{{ c.user_name }} — {{ c.start_date }} to {{ c.end_date }} (status: {{ c.status }})</li>
+                        <li>{{ c.user_name }} — {{ c.start_date }} to {{ c.end_date }} ({{ c.time_label }}, status: {{ c.status }})</li>
                         {% endfor %}
                     </ul>
                     <p class="mb-0">The lab admin has been notified and will resolve the conflict. Your request is saved as <strong>pending</strong>.</p>
@@ -20,14 +20,15 @@
             {% else %}
                 <div class="alert alert-success">
                     <h4 class="alert-heading">✅ Request Submitted</h4>
-                    <p class="mb-0">No conflicts found. Your request has been <strong>approved</strong> automatically and now appears on the public schedule.</p>
+                    <p class="mb-0">No conflicts found. Your request has been <strong>approved</strong> automatically and now appears on the schedule.</p>
                 </div>
             {% endif %}
 
             <dl class="row mt-3">
                 <dt class="col-sm-4">Requested by</dt><dd class="col-sm-8">{{ booking.user_name }}</dd>
-                <dt class="col-sm-4">Equipment</dt><dd class="col-sm-8">{{ booking.equipment }}</dd>
+                <dt class="col-sm-4">Device</dt><dd class="col-sm-8">{{ booking.equipment }}</dd>
                 <dt class="col-sm-4">Dates</dt><dd class="col-sm-8">{{ booking.start_date }} to {{ booking.end_date }}</dd>
+                <dt class="col-sm-4">Hours</dt><dd class="col-sm-8">{{ booking.time_label }}</dd>
             </dl>
 
             <div class="d-flex gap-2 mt-3">

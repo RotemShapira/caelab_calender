@@ -14,8 +14,13 @@
             <div class="navbar-nav me-auto">
                 <a class="nav-link" href="/">New Booking</a>
                 <a class="nav-link" href="/dashboard">Schedule</a>
+                {% if request.state.user and request.state.user.role == 'admin' %}
                 <a class="nav-link" href="/history">History</a>
                 <a class="nav-link" href="/admin">Admin</a>
+                <a class="nav-link" href="/admin/holidays">Holidays</a>
+                {% else %}
+                <a class="nav-link" href="/admin">Admin</a>
+                {% endif %}
             </div>
             {% if request.state.user %}
             <div class="navbar-nav align-items-center gap-2">

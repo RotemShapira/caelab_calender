@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block title %}Admin: Holidays{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+    <div>
+        <h3 class="mb-1">📅 Admin: Holiday Calendar Management</h3>
+        <p class="text-muted mb-0">
+            Import official Israeli holidays from an open-access calendar (no API key required), and manually add, rename, or remove holidays.
+        </p>
+    </div>
+    <div class="d-flex align-items-center gap-2">
+        <a href="/admin/holidays?year={{ selected_year - 1 }}" class="btn btn-outline-secondary btn-sm">&laquo; {{ selected_year - 1 }}</a>
+        <span class="fw-bold px-2">{{ selected_year }}</span>
+        <a href="/admin/holidays?year={{ selected_year + 1 }}" class="btn btn-outline-secondary btn-sm">{{ selected_year + 1 }} &raquo;</a>
+    </div>
+</div>
+
+{% if msg %}
+<div class="alert alert-success">{{ msg }}</div>
+{% endif %}
+{% if err %}
+<div class="alert alert-danger">{{ err }}</div>
+{% endif %}
+
+<div class="row g-4 mb-4">
+    <!-- Import from Open-Access Israeli Holidays Calendar -->
+    <div class="col-lg-6">
+        <div class="card p-4 h-100">
+            <h5 class="mb-2">🇮🇱 Import Open-Access Israeli Holidays</h5>
+            <p class="text-muted small mb-3">
+                Automatically pulls official Israeli public holidays for <strong>{{ selected_year }}</strong> from open-access public holiday calendars (Hebcal Israel / Nager.Date IL). Existing manual entries on the same dates are preserved.
+            </p>
+            <form method="post" action="/admin/holidays/sync">
+                <input type="hidden" name="year" value="{{ selected_year }}">
+                <button type="submit" class="btn btn-primary btn-sm">
+                    🔄 Import Israeli Holidays for {{ selected_year }}
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Add or Override a Single Holiday Manually -->
+    <div class="col-lg-6">
+        <div class="card p-4 h-100">
+            <h5 class="mb-2">➕ Add / Update Holiday Manually</h5>
+            <p class="text-muted small mb-3">
+                Add Technion vacation days, lab maintenance days, or override any existing holiday name.
+            </p>
+            <form method="post" action="/admin/holidays/add">
+                <div class="row g-2">
+                    <div class="col-md-5">
+                        <label class="form-label small mb-1">Date</label>
+                        <input type="date" class="form-control form-control-sm" name="holiday_date" required
+                               min="2020-01-01" max="2100-12-31" value="{{ selected_year }}-01-01">
+                    </div>
+                    <div class="col-md-7">
+                        <label class="form-label small mb-1">Holiday Name</label>
+                        <input type="text" class="form-control form-control-sm" name="name" required maxlength="160"
+                               placeholder="e.g. Lab Maintenance / Technion Day">
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-success btn-sm mt-3">Save Holiday</button>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Holidays Table for Selected Year -->
+<h5>Holidays in {{ selected_year }} ({{ holidays|length }})</h5>
+{% if not holidays %}
+    <div class="alert alert-info">
+        No holidays saved for {{ selected_year }} yet. Click <strong>Import Israeli Holidays for {{ selected_year }}</strong> above to load the open-access Israeli calendar, or add them manually.
+    </div>
+{% else %}
+<div class="table-responsive">
+    <table class="table table-sm align-middle mb-0">
+        <thead>
+            <tr>
+                <th>Date</th>
+                <th>Source</th>
+                <th>Holiday Name (Editable)</th>
+                <th>Action</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for h in holidays %}
+            <tr>
+                <td class="text-nowrap"><strong>{{ h.date.isoformat() }}</strong> ({{ h.date.strftime('%a') }})</td>
+                <td>
+                    {% if h.source == 'auto' %}
+                        <span class="badge bg-info text-dark">Open Calendar</span>
+                    {% else %}
+                        <span class="badge bg-secondary">Manual</span>
+                    {% endif %}
+                </td>
+                <td>
+                    <form method="post" action="/admin/holidays/{{ h.id }}/edit" class="d-flex gap-2 align-items-center">
+                        <input type="hidden" name="year" value="{{ selected_year }}">
+                        <input type="text" class="form-control form-control-sm" name="name"
+                               value="{{ h.name }}" required maxlength="160">
+                        <button type="submit" class="btn btn-sm btn-outline-primary text-nowrap">Save</button>
+                    </form>
+                </td>
+                <td>
+                    <form method="post" action="/admin/holidays/{{ h.id }}/delete" class="d-inline"
+                          onsubmit="return confirm('Delete holiday {{ h.name }} ({{ h.date.isoformat() }})?');">
+                        <input type="hidden" name="year" value="{{ selected_year }}">
+                        <button type="submit" class="btn btn-sm btn-outline-danger">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+{% endblock %}

@@ -12,10 +12,11 @@
         <thead>
             <tr>
                 <th>#</th>
-                <th>Equipment</th>
+                <th>Device</th>
                 <th>Booked By</th>
                 <th>Start</th>
                 <th>End</th>
+                <th>Hours</th>
                 <th>Details</th>
             </tr>
         </thead>
@@ -27,6 +28,7 @@
                 <td>{{ b.user_name }}</td>
                 <td>{{ b.start_date }}</td>
                 <td>{{ b.end_date }}</td>
+                <td>{{ b.time_label }}</td>
                 <td>{{ b.experiment_details or "—" }}</td>
             </tr>
             {% endfor %}

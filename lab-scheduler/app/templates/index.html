@@ -14,19 +14,33 @@
             </div>
             {% endif %}
 
+            {% if not devices %}
+            <div class="alert alert-warning">
+                No lab devices have been added yet. The lab admin needs to add devices in the <a href="/admin">Admin Panel</a> before bookings can be submitted.
+            </div>
+            {% endif %}
+
             <form method="post" action="/bookings">
                 <div class="mb-3">
                     <label class="form-label">Your Name</label>
-                    <input type="text" class="form-control" name="user_name" required maxlength="120"
-                           value="{{ form_data.user_name or (request.state.user.username if request.state.user else '') }}">
+                    {% set selected_user = form_data.user_name or (request.state.user.username if request.state.user else '') %}
+                    <select class="form-select" name="user_name" required>
+                        <option value="" disabled {% if not selected_user %}selected{% endif %}>— Select your name —</option>
+                        {% for u in usernames %}
+                        <option value="{{ u }}" {% if u == selected_user %}selected{% endif %}>{{ u }}</option>
+                        {% endfor %}
+                    </select>
                 </div>
 
                 <div class="mb-3">
-                    <label class="form-label">Equipment / Experiment Name</label>
-                    <input type="text" class="form-control" name="equipment" required maxlength="120"
-                           placeholder="e.g. XRD Machine, Fume Hood 2, Forced Resonance Rig"
-                           value="{{ form_data.equipment or '' }}">
-                    <div class="form-text">Use a consistent name so conflicts on the same equipment are detected.</div>
+                    <label class="form-label">Device / Equipment</label>
+                    <select class="form-select" name="equipment" required {% if not devices %}disabled{% endif %}>
+                        <option value="" disabled {% if not form_data.equipment %}selected{% endif %}>— Select a device —</option>
+                        {% for d in devices %}
+                        <option value="{{ d.name }}" {% if d.name == form_data.equipment %}selected{% endif %}>{{ d.name }}</option>
+                        {% endfor %}
+                    </select>
+                    <div class="form-text">Conflicts are detected only when both the device and the scheduled time overlap.</div>
                 </div>
 
                 <div class="mb-3">
@@ -48,9 +62,54 @@
                     </div>
                 </div>
 
-                <button type="submit" class="btn btn-primary w-100 mt-2">Submit Request</button>
+                <!-- Optional Hourly Breakdown -->
+                <div class="mb-3 p-3 bg-light rounded border">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="useHoursCheck" name="use_hours" value="1"
+                               {% if form_data.use_hours %}checked{% endif %}>
+                        <label class="form-check-label fw-semibold" for="useHoursCheck">
+                            🕒 Specify Specific Hours (optional — leave unchecked for All Day)
+                        </label>
+                    </div>
+                    <div id="hoursFields" class="row mt-2 {% if not form_data.use_hours %}d-none{% endif %}">
+                        <div class="col-md-6 mb-2 mb-md-0">
+                            <label class="form-label small mb-1">Start Time</label>
+                            <input type="time" class="form-control" id="startTimeInput" name="start_time"
+                                   value="{{ form_data.start_time or '09:00' }}">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label small mb-1">End Time</label>
+                            <input type="time" class="form-control" id="endTimeInput" name="end_time"
+                                   value="{{ form_data.end_time or '17:00' }}">
+                        </div>
+                        <div class="form-text mt-1">Only the chosen hour window will be reserved on each booked day; other hours remain free for other lab members.</div>
+                    </div>
+                </div>
+
+                <button type="submit" class="btn btn-primary w-100 mt-2" {% if not devices %}disabled{% endif %}>Submit Request</button>
             </form>
         </div>
     </div>
 </div>
+
+<script>
+const useHoursCheck = document.getElementById("useHoursCheck");
+const hoursFields = document.getElementById("hoursFields");
+const startTimeInput = document.getElementById("startTimeInput");
+const endTimeInput = document.getElementById("endTimeInput");
+
+function syncHoursVisibility() {
+    if (useHoursCheck.checked) {
+        hoursFields.classList.remove("d-none");
+        startTimeInput.required = true;
+        endTimeInput.required = true;
+    } else {
+        hoursFields.classList.add("d-none");
+        startTimeInput.required = false;
+        endTimeInput.required = false;
+    }
+}
+useHoursCheck.addEventListener("change", syncHoursVisibility);
+syncHoursVisibility();
+</script>
 {% endblock %}

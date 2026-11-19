@@ -9,9 +9,10 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from . import cleanup, conflict, google_calendar, models, notifications, schemas
+from . import cleanup, conflict, holidays, models, notifications, schemas
 from .auth import (
     LoginRequiredException,
     SESSION_COOKIE_NAME,
@@ -22,7 +23,7 @@ from .auth import (
     verify_same_origin,
 )
 from .database import Base, SessionLocal, engine, get_db
-from .models import AdminCredential, AppSetting, User
+from .models import AdminCredential, AppSetting, Booking, Device, Holiday, User
 from .security import (
     SESSION_TTL_SECONDS,
     clear_failed_attempts,
@@ -38,8 +39,27 @@ from .security import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("lab_scheduler")
 
-# Create any new tables on startup automatically without dropping existing data.
-Base.metadata.create_all(bind=engine)
+
+def _auto_migrate_schema() -> None:
+    """
+    Safely creates new tables and adds new columns to existing SQLite tables
+    in-place so future updates never delete or reset existing lab data.
+    """
+    Base.metadata.create_all(bind=engine)
+    with engine.begin() as conn:
+        cols = {
+            row[1]
+            for row in conn.execute(text("PRAGMA table_info(bookings)")).fetchall()
+        }
+        if "start_time" not in cols:
+            conn.execute(text("ALTER TABLE bookings ADD COLUMN start_time VARCHAR(5)"))
+            logger.info("Added start_time column to bookings table.")
+        if "end_time" not in cols:
+            conn.execute(text("ALTER TABLE bookings ADD COLUMN end_time VARCHAR(5)"))
+            logger.info("Added end_time column to bookings table.")
+
+
+_auto_migrate_schema()
 
 # Disable public Swagger/OpenAPI endpoints (/docs, /redoc, /openapi.json).
 app = FastAPI(
@@ -75,12 +95,18 @@ async def _login_redirect_handler(request: Request, exc: LoginRequiredException)
     return RedirectResponse(url="/login", status_code=303)
 
 
+def _get_allowed_usernames(db: Session) -> list[str]:
+    user_names = [u.username for u in db.query(User).order_by(User.username).all()]
+    admin_names = [a.username for a in db.query(AdminCredential).order_by(AdminCredential.username).all()]
+    return sorted(set(user_names + admin_names), key=str.lower)
+
+
 def _seed_startup_state() -> None:
     """
-    1. Ensures `admin_credentials` has an initial admin login seeded from
-       ADMIN_USERNAME / ADMIN_PASSWORD environment variables.
-    2. Initializes a persistent `session_secret` in `app_settings` so signed
-       login cookies remain valid across container restarts.
+    1. Ensures `admin_credentials` has an initial admin login seeded from env vars.
+    2. Initializes persistent `session_secret` in `app_settings`.
+    3. Seeds `devices` from existing bookings if `devices` is empty.
+    4. Auto-imports open-access Israeli holidays for the current year if `holidays` is empty.
     """
     env_username = os.getenv("ADMIN_USERNAME", "admin").strip() or "admin"
     env_password = os.getenv("ADMIN_PASSWORD", "changeme")
@@ -120,6 +146,25 @@ def _seed_startup_state() -> None:
         else:
             secret_val = secret_row.value
         set_session_secret(secret_val)
+
+        # If devices table is empty, migrate any distinct equipment names from existing bookings
+        if db.query(Device).count() == 0:
+            existing_eq = [
+                row[0]
+                for row in db.query(Booking.equipment).distinct().all()
+                if row[0] and row[0].strip()
+            ]
+            for eq in sorted(set(existing_eq)):
+                db.add(Device(name=eq.strip()))
+            if existing_eq:
+                db.commit()
+                logger.info("Seeded %d device(s) from existing bookings.", len(existing_eq))
+
+        # If holidays table is empty, pre-populate current year's open-access Israeli holidays
+        if db.query(Holiday).count() == 0:
+            added, _, src = holidays.sync_israeli_holidays_to_db(db, date.today().year)
+            if added:
+                logger.info("Auto-imported %d Israeli holidays for %d from %s.", added, date.today().year, src)
     finally:
         db.close()
 
@@ -283,11 +328,20 @@ def account_update_password(
 @app.get("/")
 def booking_form(
     request: Request,
+    db: Session = Depends(get_db),
     _user: dict = Depends(require_user),
 ):
+    devices = db.query(Device).order_by(Device.name).all()
+    usernames = _get_allowed_usernames(db)
     return templates.TemplateResponse(
         "index.html",
-        {"request": request, "errors": None, "form_data": {}},
+        {
+            "request": request,
+            "errors": None,
+            "form_data": {},
+            "devices": devices,
+            "usernames": usernames,
+        },
     )
 
 
@@ -299,24 +353,63 @@ def create_booking(
     experiment_details: str = Form(""),
     start_date: date = Form(...),
     end_date: date = Form(...),
+    use_hours: str = Form(""),
+    start_time: str = Form(""),
+    end_time: str = Form(""),
     db: Session = Depends(get_db),
     _user: dict = Depends(require_user),
 ):
+    devices = db.query(Device).order_by(Device.name).all()
+    device_names = {d.name for d in devices}
+    usernames = _get_allowed_usernames(db)
+
+    effective_start_time = start_time.strip() if use_hours else ""
+    effective_end_time = end_time.strip() if use_hours else ""
+
     form_data = {
         "user_name": user_name,
         "equipment": equipment,
         "experiment_details": experiment_details,
         "start_date": start_date,
         "end_date": end_date,
+        "use_hours": bool(use_hours),
+        "start_time": effective_start_time,
+        "end_time": effective_end_time,
     }
 
-    try:
-        validated = schemas.BookingCreate(**form_data)
-    except ValidationError as exc:
-        errors = [err["msg"] for err in exc.errors()]
+    errors: list[str] = []
+    if user_name.strip() not in usernames:
+        errors.append("Please select a valid user from the dropdown list.")
+    if not devices:
+        errors.append("No devices are configured yet. Ask the lab admin to add devices in the Admin panel.")
+    elif equipment.strip() not in device_names:
+        errors.append("Please select a valid device from the dropdown list.")
+
+    validated = None
+    if not errors:
+        try:
+            validated = schemas.BookingCreate(
+                user_name=user_name,
+                equipment=equipment,
+                experiment_details=experiment_details,
+                start_date=start_date,
+                end_date=end_date,
+                start_time=effective_start_time or None,
+                end_time=effective_end_time or None,
+            )
+        except ValidationError as exc:
+            errors = [err["msg"] for err in exc.errors()]
+
+    if errors or validated is None:
         return templates.TemplateResponse(
             "index.html",
-            {"request": request, "errors": errors, "form_data": form_data},
+            {
+                "request": request,
+                "errors": errors,
+                "form_data": form_data,
+                "devices": devices,
+                "usernames": usernames,
+            },
             status_code=422,
         )
 
@@ -325,6 +418,8 @@ def create_booking(
         equipment=validated.equipment,
         start_date=validated.start_date,
         end_date=validated.end_date,
+        start_time=validated.start_time,
+        end_time=validated.end_time,
         exclude_id=None,
     )
     has_conflict = len(conflicts) > 0
@@ -335,6 +430,8 @@ def create_booking(
         experiment_details=validated.experiment_details,
         start_date=validated.start_date,
         end_date=validated.end_date,
+        start_time=validated.start_time,
+        end_time=validated.end_time,
         status=models.STATUS_PENDING if has_conflict else models.STATUS_APPROVED,
     )
     db.add(booking)
@@ -364,7 +461,7 @@ def dashboard(
     approved = (
         db.query(models.Booking)
         .filter(models.Booking.status == models.STATUS_APPROVED)
-        .order_by(models.Booking.start_date)
+        .order_by(models.Booking.start_date, models.Booking.start_time)
         .all()
     )
     bookings_json = [
@@ -375,6 +472,9 @@ def dashboard(
             "experiment_details": b.experiment_details or "",
             "start_date": b.start_date.isoformat(),
             "end_date": b.end_date.isoformat(),
+            "start_time": b.start_time,
+            "end_time": b.end_time,
+            "time_label": b.time_label,
         }
         for b in approved
     ]
@@ -418,7 +518,7 @@ def history(
 
 
 # ---------------------------------------------------------------------------
-# Admin: conflict resolution, user management, and notification settings
+# Admin: conflict resolution, devices, users, and notification settings
 # ---------------------------------------------------------------------------
 @app.get("/admin")
 def admin_panel(
@@ -433,13 +533,13 @@ def admin_panel(
     pending = (
         db.query(models.Booking)
         .filter(models.Booking.status == models.STATUS_PENDING)
-        .order_by(models.Booking.start_date)
+        .order_by(models.Booking.start_date, models.Booking.start_time)
         .all()
     )
     approved = (
         db.query(models.Booking)
         .filter(models.Booking.status == models.STATUS_APPROVED)
-        .order_by(models.Booking.start_date)
+        .order_by(models.Booking.start_date, models.Booking.start_time)
         .all()
     )
     denied = (
@@ -450,6 +550,7 @@ def admin_panel(
         .all()
     )
     users = db.query(User).order_by(User.username).all()
+    devices = db.query(Device).order_by(Device.name).all()
     notif_cfg = notifications.get_notification_config(db)
 
     return templates.TemplateResponse(
@@ -461,6 +562,7 @@ def admin_panel(
             "denied": denied,
             "conflicts_by_id": conflicts_by_id,
             "users": users,
+            "devices": devices,
             "notif_cfg": notif_cfg,
             "admin_msg": msg,
             "admin_err": err,
@@ -489,6 +591,59 @@ def admin_save_notifications(
     db.commit()
     return RedirectResponse(
         url=f"/admin?msg={quote_plus('Collision email notification settings saved.')}",
+        status_code=303,
+    )
+
+
+@app.post("/admin/notifications/test")
+def admin_test_notification(
+    db: Session = Depends(get_db),
+    _admin: str = Depends(require_admin),
+):
+    ok, detail = notifications.send_test_email(db)
+    param = "msg" if ok else "err"
+    return RedirectResponse(url=f"/admin?{param}={quote_plus(detail)}", status_code=303)
+
+
+@app.post("/admin/devices/create")
+def admin_create_device(
+    name: str = Form(...),
+    db: Session = Depends(get_db),
+    _admin: str = Depends(require_admin),
+):
+    clean_name = name.strip()
+    if not clean_name or len(clean_name) > 120:
+        return RedirectResponse(
+            url=f"/admin?err={quote_plus('Device name must be 1 to 120 characters.')}",
+            status_code=303,
+        )
+    if db.query(Device).filter(Device.name == clean_name).first():
+        return RedirectResponse(
+            url=f"/admin?err={quote_plus(f'Device \"{clean_name}\" already exists.')}",
+            status_code=303,
+        )
+    db.add(Device(name=clean_name))
+    db.commit()
+    return RedirectResponse(
+        url=f"/admin?msg={quote_plus(f'Added device \"{clean_name}\".')}",
+        status_code=303,
+    )
+
+
+@app.post("/admin/devices/{device_id}/delete")
+def admin_delete_device(
+    device_id: int,
+    db: Session = Depends(get_db),
+    _admin: str = Depends(require_admin),
+):
+    device = db.query(Device).get(device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+    dname = device.name
+    db.delete(device)
+    db.commit()
+    return RedirectResponse(
+        url=f"/admin?msg={quote_plus(f'Removed device \"{dname}\" from the list.')}",
         status_code=303,
     )
 
@@ -564,6 +719,141 @@ def admin_delete_user(
     db.commit()
     return RedirectResponse(
         url=f"/admin?msg={quote_plus(f'Deleted user \"{uname}\".')}",
+        status_code=303,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Admin-only Holidays Tab (/admin/holidays)
+# ---------------------------------------------------------------------------
+@app.get("/admin/holidays")
+def admin_holidays_page(
+    request: Request,
+    year: int | None = None,
+    msg: str | None = None,
+    err: str | None = None,
+    db: Session = Depends(get_db),
+    _admin: str = Depends(require_admin),
+):
+    selected_year = year if (year and 2020 <= year <= 2100) else date.today().year
+    start_d = date(selected_year, 1, 1)
+    end_d = date(selected_year, 12, 31)
+    year_holidays = (
+        db.query(Holiday)
+        .filter(Holiday.date >= start_d, Holiday.date <= end_d)
+        .order_by(Holiday.date)
+        .all()
+    )
+    return templates.TemplateResponse(
+        "admin_holidays.html",
+        {
+            "request": request,
+            "selected_year": selected_year,
+            "holidays": year_holidays,
+            "msg": msg,
+            "err": err,
+        },
+    )
+
+
+@app.post("/admin/holidays/sync")
+def admin_holidays_sync(
+    year: int = Form(...),
+    db: Session = Depends(get_db),
+    _admin: str = Depends(require_admin),
+):
+    if not (2020 <= year <= 2100):
+        return RedirectResponse(
+            url=f"/admin/holidays?err={quote_plus('Year must be between 2020 and 2100.')}",
+            status_code=303,
+        )
+    added, skipped, source_name = holidays.sync_israeli_holidays_to_db(db, year)
+    if source_name == "unavailable":
+        return RedirectResponse(
+            url=f"/admin/holidays?year={year}&err={quote_plus('Could not reach the open-access Israeli holiday calendars. Check internet access or add holidays manually.')}",
+            status_code=303,
+        )
+    summary = (
+        f"Imported {added} holiday(s) for {year} from {source_name}"
+        + (f" ({skipped} existing date(s) kept unchanged)." if skipped else ".")
+    )
+    return RedirectResponse(
+        url=f"/admin/holidays?year={year}&msg={quote_plus(summary)}",
+        status_code=303,
+    )
+
+
+@app.post("/admin/holidays/add")
+def admin_holidays_add(
+    holiday_date: date = Form(...),
+    name: str = Form(...),
+    db: Session = Depends(get_db),
+    _admin: str = Depends(require_admin),
+):
+    clean_name = name.strip()
+    year = holiday_date.year
+    if not clean_name or len(clean_name) > 160:
+        return RedirectResponse(
+            url=f"/admin/holidays?year={year}&err={quote_plus('Holiday name must be 1 to 160 characters.')}",
+            status_code=303,
+        )
+    existing = db.query(Holiday).filter(Holiday.date == holiday_date).first()
+    if existing:
+        existing.name = clean_name
+        existing.source = "manual"
+        action_msg = f"Updated holiday on {holiday_date.isoformat()} to '{clean_name}'."
+    else:
+        db.add(Holiday(date=holiday_date, name=clean_name, source="manual"))
+        action_msg = f"Added holiday '{clean_name}' on {holiday_date.isoformat()}."
+    db.commit()
+    return RedirectResponse(
+        url=f"/admin/holidays?year={year}&msg={quote_plus(action_msg)}",
+        status_code=303,
+    )
+
+
+@app.post("/admin/holidays/{holiday_id}/edit")
+def admin_holidays_edit(
+    holiday_id: int,
+    name: str = Form(...),
+    year: int = Form(...),
+    db: Session = Depends(get_db),
+    _admin: str = Depends(require_admin),
+):
+    row = db.query(Holiday).get(holiday_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Holiday not found")
+    clean_name = name.strip()
+    if not clean_name or len(clean_name) > 160:
+        return RedirectResponse(
+            url=f"/admin/holidays?year={year}&err={quote_plus('Holiday name must be 1 to 160 characters.')}",
+            status_code=303,
+        )
+    row.name = clean_name
+    row.source = "manual"
+    db.commit()
+    return RedirectResponse(
+        url=f"/admin/holidays?year={year}&msg={quote_plus(f'Renamed holiday on {row.date.isoformat()} to \"{clean_name}\".')}",
+        status_code=303,
+    )
+
+
+@app.post("/admin/holidays/{holiday_id}/delete")
+def admin_holidays_delete(
+    holiday_id: int,
+    year: int = Form(...),
+    db: Session = Depends(get_db),
+    _admin: str = Depends(require_admin),
+):
+    row = db.query(Holiday).get(holiday_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Holiday not found")
+    hdate = row.date.isoformat()
+    hname = row.name
+    db.delete(row)
+    db.commit()
+    return RedirectResponse(
+        url=f"/admin/holidays?year={year}&msg={quote_plus(f'Deleted holiday \"{hname}\" ({hdate}).')}",
         status_code=303,
     )
 
@@ -680,12 +970,13 @@ def delete_booking(
 @app.get("/api/holidays")
 def get_holidays(
     year: int | None = None,
+    db: Session = Depends(get_db),
     _user: dict = Depends(require_user),
 ):
     target_year = year if year is not None else date.today().year
     if not (2020 <= target_year <= 2100):
         return {}
-    return google_calendar.fetch_holidays(target_year)
+    return holidays.get_holidays_for_year(db, target_year)
 
 
 @app.get("/health")

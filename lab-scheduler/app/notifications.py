@@ -1,9 +1,9 @@
 """
 Conflict notifications (Email + Webhook).
 
-Reads the collision notification recipient email address (and optional SMTP
-settings) from the `app_settings` SQLite table (managed directly in the
-Admin Panel at `/admin`), falling back to environment variables if unset.
+Reads the collision notification recipient email address (and SMTP settings)
+from the `app_settings` SQLite table (managed directly in the Admin Panel
+at `/admin`), falling back to environment variables if unset.
 """
 import logging
 import os
@@ -66,54 +66,83 @@ def _send_webhook(message: str) -> None:
         logger.warning("Webhook notification failed: %s", exc)
 
 
-def _send_email(subject: str, message: str, db: Session | None = None) -> None:
+def _send_email_raw(subject: str, message: str, db: Session | None = None) -> tuple[bool, str]:
     cfg = get_notification_config(db)
     notify_to = cfg["notify_email_to"]
     smtp_host = cfg["smtp_host"]
-    if not (smtp_host and notify_to):
-        if notify_to and not smtp_host:
-            logger.warning(
-                "Collision notification recipient (%s) is configured, but SMTP_HOST is not set.",
-                notify_to,
-            )
-        return
+
+    if not notify_to:
+        return False, "Recipient email address is empty."
+    if not smtp_host:
+        return (
+            False,
+            "Outgoing SMTP Server (SMTP Host) is not configured yet. "
+            "Expand 'Outgoing SMTP Server Settings' below and enter an SMTP server "
+            "(for Gmail: host smtp.gmail.com, port 587, your Gmail address, and a 16-char Google App Password).",
+        )
+
+    recipients = [addr.strip() for addr in notify_to.split(",") if addr.strip()]
+    if not recipients:
+        return False, "No valid recipient email address found."
+
     try:
         smtp_port = int(cfg["smtp_port"] or "587")
-        recipients = [addr.strip() for addr in notify_to.split(",") if addr.strip()]
-        if not recipients:
-            return
         msg = MIMEText(message)
         msg["Subject"] = subject
         msg["From"] = cfg["smtp_from"]
         msg["To"] = ", ".join(recipients)
 
-        with smtplib.SMTP(smtp_host, smtp_port, timeout=10) as server:
-            server.starttls()
-            if cfg["smtp_user"] and cfg["smtp_password"]:
-                server.login(cfg["smtp_user"], cfg["smtp_password"])
-            server.sendmail(cfg["smtp_from"], recipients, msg.as_string())
-        logger.info("Sent collision notification email to %s", ", ".join(recipients))
-    except Exception as exc:  # pragma: no cover - best effort
+        if smtp_port == 465:
+            with smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=12) as server:
+                if cfg["smtp_user"] and cfg["smtp_password"]:
+                    server.login(cfg["smtp_user"], cfg["smtp_password"])
+                server.sendmail(cfg["smtp_from"], recipients, msg.as_string())
+        else:
+            with smtplib.SMTP(smtp_host, smtp_port, timeout=12) as server:
+                server.ehlo()
+                server.starttls()
+                server.ehlo()
+                if cfg["smtp_user"] and cfg["smtp_password"]:
+                    server.login(cfg["smtp_user"], cfg["smtp_password"])
+                server.sendmail(cfg["smtp_from"], recipients, msg.as_string())
+
+        logger.info("Sent email '%s' to %s", subject, ", ".join(recipients))
+        return True, f"Email sent successfully to {', '.join(recipients)}."
+    except Exception as exc:
         logger.warning("Email notification failed: %s", exc)
+        return False, f"SMTP error: {exc}"
+
+
+def send_test_email(db: Session) -> tuple[bool, str]:
+    return _send_email_raw(
+        subject="[Lab Scheduler] Test Collision Notification",
+        message=(
+            "This is a test email from your Lab Experiment Scheduler.\n"
+            "Collision email notifications are configured and working properly!"
+        ),
+        db=db,
+    )
 
 
 def notify_conflict(new_booking, conflicting_bookings, db: Session | None = None) -> None:
     """Called whenever a freshly submitted booking overlaps existing ones."""
     conflict_summary = "; ".join(
-        f"#{b.id} {b.user_name} ({b.start_date} to {b.end_date}, status={b.status})"
+        f"#{b.id} {b.user_name} ({b.start_date} to {b.end_date}, {b.time_label}, status={b.status})"
         for b in conflicting_bookings
     )
     message = (
         f"[Lab Scheduler] Conflict detected on '{new_booking.equipment}'.\n"
         f"New request: #{new_booking.id} by {new_booking.user_name} "
-        f"({new_booking.start_date} to {new_booking.end_date}).\n"
+        f"({new_booking.start_date} to {new_booking.end_date}, {new_booking.time_label}).\n"
         f"Conflicts with: {conflict_summary}\n"
         f"Please resolve in the admin panel."
     )
     logger.info(message)
     _send_webhook(message)
-    _send_email(
+    ok, err = _send_email_raw(
         subject=f"Lab Scheduler conflict: {new_booking.equipment}",
         message=message,
         db=db,
     )
+    if not ok:
+        logger.warning("Conflict email skipped/failed: %s", err)
