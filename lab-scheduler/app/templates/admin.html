@@ -156,13 +156,12 @@
 <hr class="my-4">
 
 <!-- --------------------------------------------------------------------- -->
-<!-- Lab Devices Management (Add / Remove Devices for Dropdown)            -->
+<!-- Lab Devices Management (General Devices apart from Potentiostats)     -->
 <!-- --------------------------------------------------------------------- -->
 <div class="card p-4 mb-4">
-    <h5 class="mb-2">🔬 Lab Devices List</h5>
+    <h5 class="mb-2">🔬 General Lab Devices List</h5>
     <p class="text-muted small mb-3">
-        Devices listed here appear in the <strong>Device / Equipment</strong> dropdown on the booking form.
-        Schedule conflicts only happen when two bookings pick the <strong>same device</strong> and overlapping times.
+        Devices listed here appear in the <strong>General Lab Devices</strong> section of the booking dropdown and on the <strong>Devices Schedule</strong> calendar.
     </p>
     <form method="post" action="/admin/devices/create" class="d-flex gap-2 mb-3" style="max-width: 520px;">
         <input type="text" class="form-control form-control-sm" name="name" required maxlength="120"
@@ -171,7 +170,7 @@
     </form>
 
     {% if not devices %}
-        <div class="alert alert-warning mb-0 py-2 small">No devices added yet. Add at least one device above so lab members can book it.</div>
+        <div class="alert alert-secondary mb-0 py-2 small">No general devices added yet.</div>
     {% else %}
         <div class="d-flex flex-wrap gap-2">
             {% for d in devices %}
@@ -181,6 +180,123 @@
                       onsubmit="return confirm('Remove device {{ d.name }} from the dropdown list? Existing bookings remain intact.');">
                     <button type="submit" class="btn btn-sm btn-outline-danger py-0 px-2" title="Remove device">&times;</button>
                 </form>
+            </div>
+            {% endfor %}
+        </div>
+    {% endif %}
+</div>
+
+<!-- --------------------------------------------------------------------- -->
+<!-- Potentiostats & Channels Management (2 Channel Categories)            -->
+<!-- --------------------------------------------------------------------- -->
+<div class="card p-4 mb-4 border-primary">
+    <h5 class="mb-2 text-primary">⚡ Potentiostats &amp; Channels Management</h5>
+    <p class="text-muted small mb-3">
+        Potentiostats appear in the main booking dropdown; selecting one opens its channel list separated into 2 categories.
+        Potentiostat bookings appear on their own dedicated <strong>⚡ Potentiostats</strong> calendar tab.
+    </p>
+
+    <!-- Configure the 2 Channel Category Names -->
+    <form method="post" action="/admin/potentiostats/categories" class="p-3 bg-light rounded border mb-4">
+        <div class="small fw-semibold text-muted mb-2">Channel Category Names (2 Categories)</div>
+        <div class="row g-2 align-items-end">
+            <div class="col-md-5">
+                <label class="form-label small mb-1 text-primary fw-semibold">Category 1 Name</label>
+                <input type="text" class="form-control form-control-sm" name="cat1_name" required maxlength="80"
+                       value="{{ pot_cat_labels['1'] }}">
+            </div>
+            <div class="col-md-5">
+                <label class="form-label small mb-1 text-success fw-semibold">Category 2 Name</label>
+                <input type="text" class="form-control form-control-sm" name="cat2_name" required maxlength="80"
+                       value="{{ pot_cat_labels['2'] }}">
+            </div>
+            <div class="col-md-2">
+                <button type="submit" class="btn btn-sm btn-outline-primary w-100">Save Names</button>
+            </div>
+        </div>
+    </form>
+
+    <!-- Add a New Potentiostat -->
+    <form method="post" action="/admin/potentiostats/create" class="d-flex gap-2 mb-4" style="max-width: 520px;">
+        <input type="text" class="form-control form-control-sm" name="name" required maxlength="120"
+               placeholder="New Potentiostat Name (e.g. BioLogic VSP-300, Gamry 1)">
+        <button type="submit" class="btn btn-sm btn-primary text-nowrap">➕ Add Potentiostat</button>
+    </form>
+
+    {% if not potentiostats %}
+        <div class="alert alert-secondary mb-0 py-2 small">No potentiostats added yet. Add a potentiostat above, then add its channels in Category 1 or Category 2.</div>
+    {% else %}
+        <div class="d-flex flex-column gap-3">
+            {% for p in potentiostats %}
+            <div class="border rounded p-3 bg-white">
+                <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">
+                    <h6 class="mb-0 fw-bold">⚡ {{ p.name }} <span class="badge bg-light text-dark border ms-1">{{ p.channels|length }} channel(s)</span></h6>
+                    <form method="post" action="/admin/potentiostats/{{ p.id }}/delete" class="d-inline mb-0"
+                          onsubmit="return confirm('Remove potentiostat {{ p.name }} and all its channels? Existing bookings remain intact.');">
+                        <button type="submit" class="btn btn-sm btn-outline-danger py-0 px-2">Remove Potentiostat</button>
+                    </form>
+                </div>
+
+                <!-- Add Channel Form for this Potentiostat -->
+                <form method="post" action="/admin/potentiostats/{{ p.id }}/channels/create" class="row g-2 align-items-center mb-3">
+                    <div class="col-md-5">
+                        <input type="text" class="form-control form-control-sm" name="channel_name" required maxlength="80"
+                               placeholder="Channel name (e.g. Channel 1, Ch 2)">
+                    </div>
+                    <div class="col-md-4">
+                        <select class="form-select form-select-sm" name="category">
+                            <option value="1">{{ pot_cat_labels['1'] }}</option>
+                            <option value="2">{{ pot_cat_labels['2'] }}</option>
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <button type="submit" class="btn btn-sm btn-success w-100">➕ Add Channel</button>
+                    </div>
+                </form>
+
+                <!-- 2-Column Channel List by Category -->
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <div class="p-2 bg-light rounded border h-100">
+                            <div class="small fw-bold text-primary mb-2">{{ pot_cat_labels['1'] }}</div>
+                            {% set cat1_ch = p.channels | selectattr('category', 'equalto', '1') | list %}
+                            {% if not cat1_ch %}
+                                <div class="small text-muted fst-italic">No channels yet.</div>
+                            {% else %}
+                                <div class="d-flex flex-wrap gap-2">
+                                    {% for ch in cat1_ch %}
+                                    <div class="border rounded px-2 py-1 bg-white d-flex align-items-center gap-2 small">
+                                        <span>{{ ch.name }}</span>
+                                        <form method="post" action="/admin/potentiostats/channels/{{ ch.id }}/delete" class="d-inline mb-0">
+                                            <button type="submit" class="btn btn-sm btn-outline-danger py-0 px-1" style="line-height:1;" title="Remove channel">&times;</button>
+                                        </form>
+                                    </div>
+                                    {% endfor %}
+                                </div>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="p-2 bg-light rounded border h-100">
+                            <div class="small fw-bold text-success mb-2">{{ pot_cat_labels['2'] }}</div>
+                            {% set cat2_ch = p.channels | selectattr('category', 'equalto', '2') | list %}
+                            {% if not cat2_ch %}
+                                <div class="small text-muted fst-italic">No channels yet.</div>
+                            {% else %}
+                                <div class="d-flex flex-wrap gap-2">
+                                    {% for ch in cat2_ch %}
+                                    <div class="border rounded px-2 py-1 bg-white d-flex align-items-center gap-2 small">
+                                        <span>{{ ch.name }}</span>
+                                        <form method="post" action="/admin/potentiostats/channels/{{ ch.id }}/delete" class="d-inline mb-0">
+                                            <button type="submit" class="btn btn-sm btn-outline-danger py-0 px-1" style="line-height:1;" title="Remove channel">&times;</button>
+                                        </form>
+                                    </div>
+                                    {% endfor %}
+                                </div>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
             </div>
             {% endfor %}
         </div>

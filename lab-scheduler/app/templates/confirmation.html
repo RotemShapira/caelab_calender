@@ -4,36 +4,53 @@
 <div class="row justify-content-center">
     <div class="col-lg-7">
         <div class="card p-4">
-            {% if has_conflict %}
-                <div class="alert alert-warning">
-                    <h4 class="alert-heading">⚠️ Conflict Detected</h4>
-                    <p>Your request for <strong>{{ booking.equipment }}</strong>
-                       ({{ booking.start_date }} to {{ booking.end_date }}, <strong>{{ booking.time_label }}</strong>) overlaps with
-                       {{ conflicts|length }} existing request(s):</p>
-                    <ul class="mb-2">
-                        {% for c in conflicts %}
-                        <li>{{ c.user_name }} — {{ c.start_date }} to {{ c.end_date }} ({{ c.time_label }}, status: {{ c.status }})</li>
-                        {% endfor %}
-                    </ul>
-                    <p class="mb-0">The lab admin has been notified and will resolve the conflict. Your request is saved as <strong>pending</strong>.</p>
-                </div>
-            {% else %}
-                <div class="alert alert-success">
-                    <h4 class="alert-heading">✅ Request Submitted</h4>
-                    <p class="mb-0">No conflicts found. Your request has been <strong>approved</strong> automatically and now appears on the schedule.</p>
-                </div>
-            {% endif %}
+            {% for item in results %}
+                {% set b = item.booking %}
+                {% if item.has_conflict %}
+                    <div class="alert alert-warning">
+                        <h5 class="alert-heading">⚠️ Conflict Detected — {{ b.equipment }}</h5>
+                        <p>Your request for <strong>{{ b.equipment }}</strong>
+                           ({{ b.start_date }} to {{ b.end_date }}, <strong>{{ b.time_label }}</strong>) overlaps with
+                           {{ item.conflicts|length }} existing request(s):</p>
+                        <ul class="mb-2">
+                            {% for c in item.conflicts %}
+                            <li>{{ c.user_name }} — {{ c.start_date }} to {{ c.end_date }} ({{ c.time_label }}, status: {{ c.status }})</li>
+                            {% endfor %}
+                        </ul>
+                        <p class="mb-0">The lab admin has been notified and will resolve the conflict. Saved as <strong>pending</strong>.</p>
+                    </div>
+                {% else %}
+                    <div class="alert alert-success">
+                        <h5 class="alert-heading">✅ Request Approved — {{ b.equipment }}</h5>
+                        <p class="mb-0">No conflicts found. Your booking has been <strong>approved</strong> automatically and now appears on the schedule.</p>
+                    </div>
+                {% endif %}
+            {% endfor %}
 
-            <dl class="row mt-3">
+            <dl class="row mt-2">
                 <dt class="col-sm-4">Requested by</dt><dd class="col-sm-8">{{ booking.user_name }}</dd>
-                <dt class="col-sm-4">Device</dt><dd class="col-sm-8">{{ booking.equipment }}</dd>
+                <dt class="col-sm-4">Booked Item(s)</dt>
+                <dd class="col-sm-8">
+                    {% for item in results %}
+                        <div>
+                            <strong>{{ item.booking.equipment }}</strong>
+                            {% if item.booking.channel_category %}
+                                <span class="badge bg-secondary ms-1">{{ pot_cat_labels[item.booking.channel_category] }}</span>
+                            {% endif %}
+                        </div>
+                    {% endfor %}
+                </dd>
                 <dt class="col-sm-4">Dates</dt><dd class="col-sm-8">{{ booking.start_date }} to {{ booking.end_date }}</dd>
                 <dt class="col-sm-4">Hours</dt><dd class="col-sm-8">{{ booking.time_label }}</dd>
             </dl>
 
             <div class="d-flex gap-2 mt-3">
                 <a href="/" class="btn btn-outline-secondary">Submit Another Request</a>
-                <a href="/dashboard" class="btn btn-outline-primary">View Schedule</a>
+                {% if is_potentiostat_booking %}
+                <a href="/potentiostats" class="btn btn-outline-primary">⚡ View Potentiostats Schedule</a>
+                {% else %}
+                <a href="/dashboard" class="btn btn-outline-primary">View Devices Schedule</a>
+                {% endif %}
             </div>
         </div>
     </div>

@@ -2,7 +2,7 @@
 {% block title %}New Booking Request{% endblock %}
 {% block content %}
 <div class="row justify-content-center">
-    <div class="col-lg-7">
+    <div class="col-lg-8">
         <div class="card p-4">
             <h3 class="mb-3">Request Equipment / Experiment Time</h3>
 
@@ -14,9 +14,9 @@
             </div>
             {% endif %}
 
-            {% if not devices %}
+            {% if not devices and not potentiostats %}
             <div class="alert alert-warning">
-                No lab devices have been added yet. The lab admin needs to add devices in the <a href="/admin">Admin Panel</a> before bookings can be submitted.
+                No lab devices or potentiostats have been added yet. The lab admin needs to add them in the <a href="/admin">Admin Panel</a> before bookings can be submitted.
             </div>
             {% endif %}
 
@@ -33,14 +33,51 @@
                 </div>
 
                 <div class="mb-3">
-                    <label class="form-label">Device / Equipment</label>
-                    <select class="form-select" name="equipment" required {% if not devices %}disabled{% endif %}>
-                        <option value="" disabled {% if not form_data.equipment %}selected{% endif %}>— Select a device —</option>
-                        {% for d in devices %}
-                        <option value="{{ d.name }}" {% if d.name == form_data.equipment %}selected{% endif %}>{{ d.name }}</option>
-                        {% endfor %}
+                    <label class="form-label">Device / Potentiostat</label>
+                    {% set selected_eq = form_data.equipment_selection or '' %}
+                    <select class="form-select" name="equipment_selection" id="equipmentSelect" required {% if not devices and not potentiostats %}disabled{% endif %}>
+                        <option value="" disabled {% if not selected_eq %}selected{% endif %}>— Select a device or potentiostat —</option>
+                        {% if devices %}
+                        <optgroup label="🔬 General Lab Devices">
+                            {% for d in devices %}
+                            {% set val = "device::" ~ d.name %}
+                            <option value="{{ val }}" {% if val == selected_eq %}selected{% endif %}>{{ d.name }}</option>
+                            {% endfor %}
+                        </optgroup>
+                        {% endif %}
+                        {% if potentiostats %}
+                        <optgroup label="⚡ Potentiostats">
+                            {% for p in potentiostats %}
+                            {% set val = "potentiostat::" ~ p.id %}
+                            <option value="{{ val }}" {% if val == selected_eq %}selected{% endif %}>⚡ {{ p.name }}</option>
+                            {% endfor %}
+                        </optgroup>
+                        {% endif %}
                     </select>
-                    <div class="form-text">Conflicts are detected only when both the device and the scheduled time overlap.</div>
+                    <div class="form-text">Selecting a Potentiostat opens its channel list below (separated into 2 categories).</div>
+                </div>
+
+                <!-- Dynamic Potentiostat Channel Picker (opens automatically when a Potentiostat is selected) -->
+                <div id="potentiostatChannelsBox" class="mb-3 p-3 bg-light rounded border border-primary d-none">
+                    <div class="fw-semibold text-primary mb-2" id="potChannelsHeader">⚡ Select Channel(s)</div>
+                    <div id="potNoChannelsAlert" class="alert alert-warning py-2 small mb-0 d-none">
+                        This potentiostat has no channels configured yet. Ask the admin to add channels in the Admin Panel.
+                    </div>
+                    <div class="row g-3" id="potChannelsColumns">
+                        <div class="col-md-6">
+                            <div class="border rounded p-2 bg-white h-100">
+                                <div class="small fw-bold text-uppercase text-primary mb-2" id="cat1Heading">{{ pot_cat_labels['1'] }}</div>
+                                <div id="cat1ChannelList" class="d-flex flex-column gap-1"></div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="border rounded p-2 bg-white h-100">
+                                <div class="small fw-bold text-uppercase text-success mb-2" id="cat2Heading">{{ pot_cat_labels['2'] }}</div>
+                                <div id="cat2ChannelList" class="d-flex flex-column gap-1"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-text mt-2">Select one or more channels. Conflicts are checked per individual channel and time slot.</div>
                 </div>
 
                 <div class="mb-3">
@@ -86,13 +123,97 @@
                     </div>
                 </div>
 
-                <button type="submit" class="btn btn-primary w-100 mt-2" {% if not devices %}disabled{% endif %}>Submit Request</button>
+                <button type="submit" class="btn btn-primary w-100 mt-2" {% if not devices and not potentiostats %}disabled{% endif %}>Submit Request</button>
             </form>
         </div>
     </div>
 </div>
 
 <script>
+const POTENTIOSTATS = {{ potentiostats | tojson }};
+const PRESELECTED_CHANNELS = new Set({{ (form_data.channel_ids or []) | tojson }});
+
+const equipmentSelect = document.getElementById("equipmentSelect");
+const potBox = document.getElementById("potentiostatChannelsBox");
+const potHeader = document.getElementById("potChannelsHeader");
+const potNoChannels = document.getElementById("potNoChannelsAlert");
+const potColumns = document.getElementById("potChannelsColumns");
+const cat1List = document.getElementById("cat1ChannelList");
+const cat2List = document.getElementById("cat2ChannelList");
+
+function renderPotentiostatChannels() {
+    const val = equipmentSelect ? equipmentSelect.value : "";
+    if (!val || !val.startsWith("potentiostat::")) {
+        potBox.classList.add("d-none");
+        cat1List.innerHTML = "";
+        cat2List.innerHTML = "";
+        return;
+    }
+
+    const potId = parseInt(val.slice("potentiostat::".length), 10);
+    const pot = POTENTIOSTATS.find(p => p.id === potId);
+    if (!pot) {
+        potBox.classList.add("d-none");
+        return;
+    }
+
+    potHeader.textContent = `⚡ Select Channel(s) for ${pot.name}`;
+    potBox.classList.remove("d-none");
+    cat1List.innerHTML = "";
+    cat2List.innerHTML = "";
+
+    const ch1 = pot.channels.filter(c => c.category === "1");
+    const ch2 = pot.channels.filter(c => c.category === "2");
+
+    if (!pot.channels.length) {
+        potNoChannels.classList.remove("d-none");
+        potColumns.classList.add("d-none");
+        return;
+    }
+
+    potNoChannels.classList.add("d-none");
+    potColumns.classList.remove("d-none");
+
+    function populate(container, list) {
+        if (!list.length) {
+            const empty = document.createElement("div");
+            empty.className = "small text-muted fst-italic";
+            empty.textContent = "No channels in this category.";
+            container.appendChild(empty);
+            return;
+        }
+        list.forEach(ch => {
+            const wrap = document.createElement("div");
+            wrap.className = "form-check";
+            const input = document.createElement("input");
+            input.className = "form-check-input";
+            input.type = "checkbox";
+            input.name = "channel_ids";
+            input.value = String(ch.id);
+            input.id = `pot_ch_${ch.id}`;
+            if (PRESELECTED_CHANNELS.has(ch.id)) input.checked = true;
+
+            const lbl = document.createElement("label");
+            lbl.className = "form-check-label small";
+            lbl.htmlFor = input.id;
+            lbl.style.cursor = "pointer";
+            lbl.textContent = ch.name;
+
+            wrap.appendChild(input);
+            wrap.appendChild(lbl);
+            container.appendChild(wrap);
+        });
+    }
+
+    populate(cat1List, ch1);
+    populate(cat2List, ch2);
+}
+
+if (equipmentSelect) {
+    equipmentSelect.addEventListener("change", renderPotentiostatChannels);
+    renderPotentiostatChannels();
+}
+
 const useHoursCheck = document.getElementById("useHoursCheck");
 const hoursFields = document.getElementById("hoursFields");
 const startTimeInput = document.getElementById("startTimeInput");

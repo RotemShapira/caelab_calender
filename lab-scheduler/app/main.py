@@ -23,7 +23,18 @@ from .auth import (
     verify_same_origin,
 )
 from .database import Base, SessionLocal, engine, get_db
-from .models import AdminCredential, AppSetting, Booking, Device, Holiday, User
+from .models import (
+    AdminCredential,
+    AppSetting,
+    BOOKING_TYPE_DEVICE,
+    BOOKING_TYPE_POTENTIOSTAT,
+    Booking,
+    Device,
+    Holiday,
+    Potentiostat,
+    PotentiostatChannel,
+    User,
+)
 from .security import (
     SESSION_TTL_SECONDS,
     clear_failed_attempts,
@@ -57,6 +68,15 @@ def _auto_migrate_schema() -> None:
         if "end_time" not in cols:
             conn.execute(text("ALTER TABLE bookings ADD COLUMN end_time VARCHAR(5)"))
             logger.info("Added end_time column to bookings table.")
+        if "booking_type" not in cols:
+            conn.execute(text("ALTER TABLE bookings ADD COLUMN booking_type VARCHAR(20) NOT NULL DEFAULT 'device'"))
+            logger.info("Added booking_type column to bookings table.")
+        if "potentiostat_name" not in cols:
+            conn.execute(text("ALTER TABLE bookings ADD COLUMN potentiostat_name VARCHAR(120)"))
+            logger.info("Added potentiostat_name column to bookings table.")
+        if "channel_category" not in cols:
+            conn.execute(text("ALTER TABLE bookings ADD COLUMN channel_category VARCHAR(20)"))
+            logger.info("Added channel_category column to bookings table.")
 
 
 _auto_migrate_schema()
@@ -99,6 +119,42 @@ def _get_allowed_usernames(db: Session) -> list[str]:
     user_names = [u.username for u in db.query(User).order_by(User.username).all()]
     admin_names = [a.username for a in db.query(AdminCredential).order_by(AdminCredential.username).all()]
     return sorted(set(user_names + admin_names), key=str.lower)
+
+
+SETTING_POT_CAT1 = "potentiostat_cat1_name"
+SETTING_POT_CAT2 = "potentiostat_cat2_name"
+
+
+def _get_potentiostat_category_labels(db: Session) -> dict[str, str]:
+    c1 = db.query(AppSetting).filter(AppSetting.key == SETTING_POT_CAT1).first()
+    c2 = db.query(AppSetting).filter(AppSetting.key == SETTING_POT_CAT2).first()
+    return {
+        "1": (c1.value.strip() if c1 and c1.value.strip() else "Category 1 (Standard)"),
+        "2": (c2.value.strip() if c2 and c2.value.strip() else "Category 2 (High Current / EIS)"),
+    }
+
+
+def _get_potentiostats_payload(db: Session) -> list[dict]:
+    pots = db.query(Potentiostat).order_by(Potentiostat.name).all()
+    payload = []
+    for p in pots:
+        channels = (
+            db.query(PotentiostatChannel)
+            .filter(PotentiostatChannel.potentiostat_id == p.id)
+            .order_by(PotentiostatChannel.category, PotentiostatChannel.name)
+            .all()
+        )
+        payload.append(
+            {
+                "id": p.id,
+                "name": p.name,
+                "channels": [
+                    {"id": ch.id, "name": ch.name, "category": ch.category}
+                    for ch in channels
+                ],
+            }
+        )
+    return payload
 
 
 def _seed_startup_state() -> None:
@@ -332,6 +388,8 @@ def booking_form(
     _user: dict = Depends(require_user),
 ):
     devices = db.query(Device).order_by(Device.name).all()
+    potentiostats = _get_potentiostats_payload(db)
+    pot_cat_labels = _get_potentiostat_category_labels(db)
     usernames = _get_allowed_usernames(db)
     return templates.TemplateResponse(
         "index.html",
@@ -340,6 +398,8 @@ def booking_form(
             "errors": None,
             "form_data": {},
             "devices": devices,
+            "potentiostats": potentiostats,
+            "pot_cat_labels": pot_cat_labels,
             "usernames": usernames,
         },
     )
@@ -349,7 +409,8 @@ def booking_form(
 def create_booking(
     request: Request,
     user_name: str = Form(...),
-    equipment: str = Form(...),
+    equipment_selection: str = Form(...),
+    channel_ids: list[int] = Form(default=[]),
     experiment_details: str = Form(""),
     start_date: date = Form(...),
     end_date: date = Form(...),
@@ -361,6 +422,8 @@ def create_booking(
 ):
     devices = db.query(Device).order_by(Device.name).all()
     device_names = {d.name for d in devices}
+    potentiostats = _get_potentiostats_payload(db)
+    pot_cat_labels = _get_potentiostat_category_labels(db)
     usernames = _get_allowed_usernames(db)
 
     effective_start_time = start_time.strip() if use_hours else ""
@@ -368,7 +431,8 @@ def create_booking(
 
     form_data = {
         "user_name": user_name,
-        "equipment": equipment,
+        "equipment_selection": equipment_selection,
+        "channel_ids": channel_ids,
         "experiment_details": experiment_details,
         "start_date": start_date,
         "end_date": end_date,
@@ -380,27 +444,75 @@ def create_booking(
     errors: list[str] = []
     if user_name.strip() not in usernames:
         errors.append("Please select a valid user from the dropdown list.")
-    if not devices:
-        errors.append("No devices are configured yet. Ask the lab admin to add devices in the Admin panel.")
-    elif equipment.strip() not in device_names:
-        errors.append("Please select a valid device from the dropdown list.")
 
-    validated = None
-    if not errors:
-        try:
-            validated = schemas.BookingCreate(
-                user_name=user_name,
-                equipment=equipment,
-                experiment_details=experiment_details,
-                start_date=start_date,
-                end_date=end_date,
-                start_time=effective_start_time or None,
-                end_time=effective_end_time or None,
+    # Resolve whether the user picked a General Device or a Potentiostat + Channel(s)
+    targets: list[dict] = []  # each: {"equipment": str, "booking_type": str, "pot_name": str|None, "cat": str|None}
+
+    if equipment_selection.startswith("device::"):
+        chosen_dev = equipment_selection[len("device::"):].strip()
+        if chosen_dev not in device_names:
+            errors.append("Please select a valid device from the dropdown list.")
+        else:
+            targets.append(
+                {
+                    "equipment": chosen_dev,
+                    "booking_type": BOOKING_TYPE_DEVICE,
+                    "pot_name": None,
+                    "cat": None,
+                }
             )
-        except ValidationError as exc:
-            errors = [err["msg"] for err in exc.errors()]
+    elif equipment_selection.startswith("potentiostat::"):
+        try:
+            pot_id = int(equipment_selection[len("potentiostat::"):])
+        except ValueError:
+            pot_id = -1
+        pot = db.query(Potentiostat).get(pot_id)
+        if not pot:
+            errors.append("Please select a valid potentiostat from the dropdown list.")
+        else:
+            valid_channels = (
+                db.query(PotentiostatChannel)
+                .filter(
+                    PotentiostatChannel.potentiostat_id == pot.id,
+                    PotentiostatChannel.id.in_(channel_ids),
+                )
+                .order_by(PotentiostatChannel.category, PotentiostatChannel.name)
+                .all()
+            ) if channel_ids else []
+            if not valid_channels:
+                errors.append(f"Please select at least one channel on {pot.name}.")
+            else:
+                for ch in valid_channels:
+                    targets.append(
+                        {
+                            "equipment": f"{pot.name} — {ch.name}",
+                            "booking_type": BOOKING_TYPE_POTENTIOSTAT,
+                            "pot_name": pot.name,
+                            "cat": ch.category,
+                        }
+                    )
+    else:
+        errors.append("Please select a device or potentiostat from the dropdown list.")
 
-    if errors or validated is None:
+    validated_list: list[tuple[schemas.BookingCreate, dict]] = []
+    if not errors:
+        for t in targets:
+            try:
+                validated = schemas.BookingCreate(
+                    user_name=user_name,
+                    equipment=t["equipment"],
+                    experiment_details=experiment_details,
+                    start_date=start_date,
+                    end_date=end_date,
+                    start_time=effective_start_time or None,
+                    end_time=effective_end_time or None,
+                )
+                validated_list.append((validated, t))
+            except ValidationError as exc:
+                errors = [err["msg"] for err in exc.errors()]
+                break
+
+    if errors or not validated_list:
         return templates.TemplateResponse(
             "index.html",
             {
@@ -408,46 +520,71 @@ def create_booking(
                 "errors": errors,
                 "form_data": form_data,
                 "devices": devices,
+                "potentiostats": potentiostats,
+                "pot_cat_labels": pot_cat_labels,
                 "usernames": usernames,
             },
             status_code=422,
         )
 
-    conflicts = conflict.find_conflicts(
-        db,
-        equipment=validated.equipment,
-        start_date=validated.start_date,
-        end_date=validated.end_date,
-        start_time=validated.start_time,
-        end_time=validated.end_time,
-        exclude_id=None,
-    )
-    has_conflict = len(conflicts) > 0
+    created_results: list[dict] = []
+    any_conflict = False
+    is_potentiostat_booking = False
 
-    booking = models.Booking(
-        user_name=validated.user_name,
-        equipment=validated.equipment,
-        experiment_details=validated.experiment_details,
-        start_date=validated.start_date,
-        end_date=validated.end_date,
-        start_time=validated.start_time,
-        end_time=validated.end_time,
-        status=models.STATUS_PENDING if has_conflict else models.STATUS_APPROVED,
-    )
-    db.add(booking)
-    db.commit()
-    db.refresh(booking)
+    for validated, meta in validated_list:
+        conflicts = conflict.find_conflicts(
+            db,
+            equipment=validated.equipment,
+            start_date=validated.start_date,
+            end_date=validated.end_date,
+            start_time=validated.start_time,
+            end_time=validated.end_time,
+            exclude_id=None,
+        )
+        has_conflict = len(conflicts) > 0
+        if has_conflict:
+            any_conflict = True
+        if meta["booking_type"] == BOOKING_TYPE_POTENTIOSTAT:
+            is_potentiostat_booking = True
 
-    if has_conflict:
-        notifications.notify_conflict(booking, conflicts, db=db)
+        booking = models.Booking(
+            user_name=validated.user_name,
+            equipment=validated.equipment,
+            experiment_details=validated.experiment_details,
+            start_date=validated.start_date,
+            end_date=validated.end_date,
+            start_time=validated.start_time,
+            end_time=validated.end_time,
+            booking_type=meta["booking_type"],
+            potentiostat_name=meta["pot_name"],
+            channel_category=meta["cat"],
+            status=models.STATUS_PENDING if has_conflict else models.STATUS_APPROVED,
+        )
+        db.add(booking)
+        db.commit()
+        db.refresh(booking)
+
+        if has_conflict:
+            notifications.notify_conflict(booking, conflicts, db=db)
+
+        created_results.append(
+            {
+                "booking": booking,
+                "has_conflict": has_conflict,
+                "conflicts": conflicts,
+            }
+        )
 
     return templates.TemplateResponse(
         "confirmation.html",
         {
             "request": request,
-            "booking": booking,
-            "has_conflict": has_conflict,
-            "conflicts": conflicts,
+            "booking": created_results[0]["booking"],
+            "has_conflict": any_conflict,
+            "conflicts": created_results[0]["conflicts"],
+            "results": created_results,
+            "is_potentiostat_booking": is_potentiostat_booking,
+            "pot_cat_labels": pot_cat_labels,
         },
     )
 
@@ -460,7 +597,10 @@ def dashboard(
 ):
     approved = (
         db.query(models.Booking)
-        .filter(models.Booking.status == models.STATUS_APPROVED)
+        .filter(
+            models.Booking.status == models.STATUS_APPROVED,
+            models.Booking.booking_type == BOOKING_TYPE_DEVICE,
+        )
         .order_by(models.Booking.start_date, models.Booking.start_time)
         .all()
     )
@@ -489,6 +629,62 @@ def dashboard(
             "bookings": approved,
             "bookings_json": bookings_json,
             "filter_devices": filter_devices,
+            "today": date.today(),
+        },
+    )
+
+
+@app.get("/potentiostats")
+def potentiostats_dashboard(
+    request: Request,
+    db: Session = Depends(get_db),
+    _user: dict = Depends(require_user),
+):
+    approved = (
+        db.query(models.Booking)
+        .filter(
+            models.Booking.status == models.STATUS_APPROVED,
+            models.Booking.booking_type == BOOKING_TYPE_POTENTIOSTAT,
+        )
+        .order_by(models.Booking.start_date, models.Booking.start_time)
+        .all()
+    )
+    potentiostats = _get_potentiostats_payload(db)
+    pot_cat_labels = _get_potentiostat_category_labels(db)
+
+    bookings_json = [
+        {
+            "id": b.id,
+            "equipment": b.equipment,
+            "potentiostat_name": b.potentiostat_name or b.equipment,
+            "channel_name": b.channel_name,
+            "channel_category": b.channel_category or "1",
+            "category_label": pot_cat_labels.get(b.channel_category or "1", "Category 1"),
+            "user_name": b.user_name,
+            "experiment_details": b.experiment_details or "",
+            "start_date": b.start_date.isoformat(),
+            "end_date": b.end_date.isoformat(),
+            "start_time": b.start_time,
+            "end_time": b.end_time,
+            "time_label": b.time_label,
+        }
+        for b in approved
+    ]
+
+    filter_potentiostats = sorted(
+        set([p["name"] for p in potentiostats] + [b.potentiostat_name for b in approved if b.potentiostat_name]),
+        key=str.lower,
+    )
+
+    return templates.TemplateResponse(
+        "potentiostats_dashboard.html",
+        {
+            "request": request,
+            "bookings": approved,
+            "bookings_json": bookings_json,
+            "potentiostats": potentiostats,
+            "filter_potentiostats": filter_potentiostats,
+            "pot_cat_labels": pot_cat_labels,
             "today": date.today(),
         },
     )
@@ -610,6 +806,8 @@ def admin_panel(
 
     users = db.query(User).order_by(User.username).all()
     devices = db.query(Device).order_by(Device.name).all()
+    potentiostats = _get_potentiostats_payload(db)
+    pot_cat_labels = _get_potentiostat_category_labels(db)
     notif_cfg = notifications.get_notification_config(db)
 
     return templates.TemplateResponse(
@@ -624,6 +822,8 @@ def admin_panel(
             "conflict_modal_options": conflict_modal_options,
             "users": users,
             "devices": devices,
+            "potentiostats": potentiostats,
+            "pot_cat_labels": pot_cat_labels,
             "notif_cfg": notif_cfg,
             "admin_msg": msg,
             "admin_err": err,
@@ -705,6 +905,129 @@ def admin_delete_device(
     db.commit()
     return RedirectResponse(
         url=f"/admin?msg={quote_plus(f'Removed device \"{dname}\" from the list.')}",
+        status_code=303,
+    )
+
+
+@app.post("/admin/potentiostats/categories")
+def admin_update_pot_categories(
+    cat1_name: str = Form(...),
+    cat2_name: str = Form(...),
+    db: Session = Depends(get_db),
+    _admin: str = Depends(require_admin),
+):
+    c1 = cat1_name.strip()
+    c2 = cat2_name.strip()
+    if not c1 or not c2 or len(c1) > 80 or len(c2) > 80:
+        return RedirectResponse(
+            url=f"/admin?err={quote_plus('Both category names must be 1 to 80 characters.')}",
+            status_code=303,
+        )
+    notifications.set_setting(db, SETTING_POT_CAT1, c1)
+    notifications.set_setting(db, SETTING_POT_CAT2, c2)
+    db.commit()
+    return RedirectResponse(
+        url=f"/admin?msg={quote_plus(f'Updated potentiostat channel categories to \"{c1}\" and \"{c2}\".')}",
+        status_code=303,
+    )
+
+
+@app.post("/admin/potentiostats/create")
+def admin_create_potentiostat(
+    name: str = Form(...),
+    db: Session = Depends(get_db),
+    _admin: str = Depends(require_admin),
+):
+    clean_name = name.strip()
+    if not clean_name or len(clean_name) > 120:
+        return RedirectResponse(
+            url=f"/admin?err={quote_plus('Potentiostat name must be 1 to 120 characters.')}",
+            status_code=303,
+        )
+    if db.query(Potentiostat).filter(Potentiostat.name == clean_name).first():
+        return RedirectResponse(
+            url=f"/admin?err={quote_plus(f'Potentiostat \"{clean_name}\" already exists.')}",
+            status_code=303,
+        )
+    db.add(Potentiostat(name=clean_name))
+    db.commit()
+    return RedirectResponse(
+        url=f"/admin?msg={quote_plus(f'Added potentiostat \"{clean_name}\". You can now add its channels below.')}",
+        status_code=303,
+    )
+
+
+@app.post("/admin/potentiostats/{pot_id}/delete")
+def admin_delete_potentiostat(
+    pot_id: int,
+    db: Session = Depends(get_db),
+    _admin: str = Depends(require_admin),
+):
+    pot = db.query(Potentiostat).get(pot_id)
+    if not pot:
+        raise HTTPException(status_code=404, detail="Potentiostat not found")
+    pname = pot.name
+    db.delete(pot)
+    db.commit()
+    return RedirectResponse(
+        url=f"/admin?msg={quote_plus(f'Removed potentiostat \"{pname}\" and its channels.')}",
+        status_code=303,
+    )
+
+
+@app.post("/admin/potentiostats/{pot_id}/channels/create")
+def admin_create_potentiostat_channel(
+    pot_id: int,
+    channel_name: str = Form(...),
+    category: str = Form("1"),
+    db: Session = Depends(get_db),
+    _admin: str = Depends(require_admin),
+):
+    pot = db.query(Potentiostat).get(pot_id)
+    if not pot:
+        raise HTTPException(status_code=404, detail="Potentiostat not found")
+    clean_ch = channel_name.strip()
+    cat = "2" if category.strip() == "2" else "1"
+    if not clean_ch or len(clean_ch) > 80:
+        return RedirectResponse(
+            url=f"/admin?err={quote_plus('Channel name must be 1 to 80 characters.')}",
+            status_code=303,
+        )
+    existing = (
+        db.query(PotentiostatChannel)
+        .filter(
+            PotentiostatChannel.potentiostat_id == pot.id,
+            PotentiostatChannel.name == clean_ch,
+        )
+        .first()
+    )
+    if existing:
+        return RedirectResponse(
+            url=f"/admin?err={quote_plus(f'Channel \"{clean_ch}\" already exists on {pot.name}.')}",
+            status_code=303,
+        )
+    db.add(PotentiostatChannel(potentiostat_id=pot.id, name=clean_ch, category=cat))
+    db.commit()
+    return RedirectResponse(
+        url=f"/admin?msg={quote_plus(f'Added channel \"{clean_ch}\" to {pot.name}.')}",
+        status_code=303,
+    )
+
+
+@app.post("/admin/potentiostats/channels/{channel_id}/delete")
+def admin_delete_potentiostat_channel(
+    channel_id: int,
+    db: Session = Depends(get_db),
+    _admin: str = Depends(require_admin),
+):
+    ch = db.query(PotentiostatChannel).get(channel_id)
+    if not ch:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    cname = ch.name
+    db.delete(ch)
+    db.commit()
+    return RedirectResponse(
+        url=f"/admin?msg={quote_plus(f'Removed channel \"{cname}\".')}",
         status_code=303,
     )
 
