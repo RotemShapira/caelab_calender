@@ -5,9 +5,8 @@ __pycache__/
 venv/
 .env
 lab-scheduler/.env
-lab-scheduler/data/lab_production.db*
-lab-scheduler/data/*.bak*
+*.db
+*.db-*
+*.db.bak*
 lab-scheduler/tailscale/state/
-data/lab_production.db*
-data/*.bak*
 tailscale/state/
