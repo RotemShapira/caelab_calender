@@ -4,7 +4,7 @@ import os
 from datetime import date
 from urllib.parse import quote_plus
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
+from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -1522,6 +1522,46 @@ def delete_booking(
     db.delete(booking)
     db.commit()
     return RedirectResponse(url="/admin", status_code=303)
+
+
+@app.get("/api/equipment-bookings")
+def get_equipment_bookings(
+    equipment: list[str] = Query(default=[]),
+    db: Session = Depends(get_db),
+    _user: dict = Depends(require_user),
+):
+    """
+    Returns live (approved/pending) bookings for one or more selected devices or
+    potentiostat channels so the interactive booking calendar can display booked
+    hours in Red (other users) or Green (current user) and available hours blank.
+    """
+    clean_eq = [e.strip() for e in equipment if e and e.strip()]
+    if not clean_eq:
+        return []
+    rows = (
+        db.query(models.Booking)
+        .filter(
+            models.Booking.equipment.in_(clean_eq),
+            models.Booking.status.in_((models.STATUS_APPROVED, models.STATUS_PENDING)),
+        )
+        .order_by(models.Booking.start_date, models.Booking.start_time)
+        .all()
+    )
+    return [
+        {
+            "id": b.id,
+            "equipment": b.equipment,
+            "user_name": b.user_name,
+            "experiment_details": b.experiment_details or "",
+            "start_date": b.start_date.isoformat(),
+            "end_date": b.end_date.isoformat(),
+            "start_time": b.start_time,
+            "end_time": b.end_time,
+            "time_label": b.time_label,
+            "status": b.status,
+        }
+        for b in rows
+    ]
 
 
 @app.get("/api/holidays")

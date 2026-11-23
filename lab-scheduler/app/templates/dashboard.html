@@ -139,8 +139,21 @@ function pad(n) { return n < 10 ? "0" + n : "" + n; }
 
 function timeToMinutes(t, fallback) {
     if (!t) return fallback;
+    if (t === "24:00") return 1440;
     const parts = t.split(":");
     return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
+}
+
+function comparePoint(dateA, minA, dateB, minB) {
+    if (dateA !== dateB) return dateA < dateB ? -1 : 1;
+    return minA - minB;
+}
+
+function bookingCoversDayHour(b, dateKey, slotStart, slotEnd) {
+    const bs = timeToMinutes(b.start_time, 0);
+    const be = timeToMinutes(b.end_time, 1440);
+    return comparePoint(b.start_date, bs, dateKey, slotEnd) < 0 &&
+           comparePoint(b.end_date, be, dateKey, slotStart) > 0;
 }
 
 function getSelectedDevices() {
@@ -409,11 +422,7 @@ function showDayDetail(dateKey, bookings, holidayName, shouldScroll) {
         for (let h = 0; h < 24; h++) {
             const slotStart = h * 60;
             const slotEnd = (h + 1) * 60;
-            const matching = devBookings.filter(b => {
-                const bs = timeToMinutes(b.start_time, 0);
-                const be = timeToMinutes(b.end_time, 24 * 60);
-                return bs < slotEnd && be > slotStart;
-            });
+            const matching = devBookings.filter(b => bookingCoversDayHour(b, dateKey, slotStart, slotEnd));
             const td = document.createElement("td");
             if (matching.length > 0) {
                 td.style.backgroundColor = "#28a745";

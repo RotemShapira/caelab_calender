@@ -1,14 +1,16 @@
 """
-Conflict detection engine.
+Conflict detection engine using continuous (date, time) intervals.
 
 Two bookings conflict ONLY when:
-  1. They request the exact SAME device (`equipment`), AND
-  2. Their date ranges overlap: `A.start_date <= B.end_date AND A.end_date >= B.start_date`, AND
-  3. Their daily time ranges overlap: `A.start_min < B.end_min AND A.end_min > B.start_min`
-     (where All-Day bookings occupy 00:00..24:00, i.e. 0..1440 minutes).
+  1. They request the exact SAME device / potentiostat channel (`equipment`), AND
+  2. Their continuous intervals overlap:
+       A_start < B_end  AND  A_end > B_start
+     where each endpoint is `(date, minutes_from_midnight)`
+     (All-Day bookings use `start_min = 0` and `end_min = 1440`).
 
-Back-to-back slots (e.g. 09:00-12:00 and 12:00-15:00) do NOT conflict.
-Bookings on different devices NEVER conflict.
+Back-to-back bookings (e.g. 09:00-12:00 and 12:00-15:00, or Mon 14:00 -> Tue 10:00
+and Tue 10:00 -> Tue 14:00) do NOT conflict.
+Bookings on different devices or different potentiostat channels NEVER conflict.
 Only live bookings (`pending` or `approved`) are considered; `denied` bookings are ignored.
 """
 from datetime import date
@@ -22,6 +24,8 @@ from . import models
 def _time_to_minutes(t: str | None, default_minutes: int) -> int:
     if not t:
         return default_minutes
+    if t == "24:00":
+        return 24 * 60
     try:
         h, m = t.split(":")
         return int(h) * 60 + int(m)
@@ -29,16 +33,20 @@ def _time_to_minutes(t: str | None, default_minutes: int) -> int:
         return default_minutes
 
 
-def times_overlap(
+def intervals_overlap(
+    start_date_a: date,
+    end_date_a: date,
     start_time_a: str | None,
     end_time_a: str | None,
+    start_date_b: date,
+    end_date_b: date,
     start_time_b: str | None,
     end_time_b: str | None,
 ) -> bool:
-    a_start = _time_to_minutes(start_time_a, 0)
-    a_end = _time_to_minutes(end_time_a, 24 * 60)
-    b_start = _time_to_minutes(start_time_b, 0)
-    b_end = _time_to_minutes(end_time_b, 24 * 60)
+    a_start = (start_date_a, _time_to_minutes(start_time_a, 0))
+    a_end = (end_date_a, _time_to_minutes(end_time_a, 24 * 60))
+    b_start = (start_date_b, _time_to_minutes(start_time_b, 0))
+    b_end = (end_date_b, _time_to_minutes(end_time_b, 24 * 60))
     return a_start < b_end and a_end > b_start
 
 
@@ -52,7 +60,7 @@ def find_conflicts(
     exclude_id: int | None = None,
     statuses: Sequence[str] = (models.STATUS_PENDING, models.STATUS_APPROVED),
 ) -> list[models.Booking]:
-    """Return all bookings on the same device whose date AND time ranges overlap."""
+    """Return all live bookings on the same device whose continuous (date, time) intervals overlap."""
     query = db.query(models.Booking).filter(
         models.Booking.equipment == equipment,
         models.Booking.status.in_(statuses),
@@ -66,7 +74,16 @@ def find_conflicts(
     return [
         b
         for b in candidates
-        if times_overlap(start_time, end_time, b.start_time, b.end_time)
+        if intervals_overlap(
+            start_date,
+            end_date,
+            start_time,
+            end_time,
+            b.start_date,
+            b.end_date,
+            b.start_time,
+            b.end_time,
+        )
     ]
 
 

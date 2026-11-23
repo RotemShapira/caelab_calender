@@ -2,9 +2,9 @@
 {% block title %}New Booking Request{% endblock %}
 {% block content %}
 <div class="row justify-content-center">
-    <div class="col-lg-8">
+    <div class="col-xl-10 col-lg-11">
         <div class="card p-4">
-            <h3 class="mb-3">Request Equipment / Experiment Time</h3>
+            <h3 class="mb-3">🧪 Request Equipment / Experiment Time</h3>
 
             {% if errors %}
             <div class="alert alert-danger">
@@ -20,110 +20,177 @@
             </div>
             {% endif %}
 
-            <form method="post" action="/bookings">
-                <div class="mb-3">
-                    <label class="form-label">Your Name</label>
-                    {% set selected_user = form_data.user_name or (request.state.user.username if request.state.user else '') %}
-                    <select class="form-select" name="user_name" required>
-                        <option value="" disabled {% if not selected_user %}selected{% endif %}>— Select your name —</option>
-                        {% for u in usernames %}
-                        <option value="{{ u }}" {% if u == selected_user %}selected{% endif %}>{{ u }}</option>
+            <form method="post" action="/bookings" id="bookingForm">
+                <!-- Hidden canonical equipment_selection field submitted to POST /bookings -->
+                <input type="hidden" name="equipment_selection" id="equipmentSelectionInput"
+                       value="{{ form_data.equipment_selection or '' }}">
+                <!-- Always send use_hours=1 when hourly times are chosen (cleared if All Day is clicked) -->
+                <input type="hidden" name="use_hours" id="useHoursInput"
+                       value="{% if form_data.start_time or not form_data %}1{% else %}{% endif %}">
+
+                <!-- Step 1: User & Category Selection -->
+                <div class="row g-3 mb-3">
+                    <div class="col-md-5">
+                        <label class="form-label fw-semibold">1. Your Name</label>
+                        {% set selected_user = form_data.user_name or (request.state.user.username if request.state.user else '') %}
+                        <select class="form-select" name="user_name" id="userNameSelect" required>
+                            <option value="" disabled {% if not selected_user %}selected{% endif %}>— Select your name —</option>
+                            {% for u in usernames %}
+                            <option value="{{ u }}" {% if u == selected_user %}selected{% endif %}>{{ u }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <div class="col-md-7">
+                        <label class="form-label fw-semibold">2. Equipment Category</label>
+                        <div class="d-flex gap-2">
+                            <button type="button" class="btn btn-outline-primary flex-fill fw-semibold" id="catDeviceBtn"
+                                    {% if not devices %}disabled{% endif %}>
+                                🔬 General Lab Devices
+                            </button>
+                            <button type="button" class="btn btn-outline-primary flex-fill fw-semibold" id="catPotBtn"
+                                    {% if not potentiostats %}disabled{% endif %}>
+                                ⚡ Potentiostats
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Step 2a: General Device Picker -->
+                <div id="generalDeviceSection" class="mb-3 d-none">
+                    <label class="form-label fw-semibold">3. Select Device</label>
+                    <select class="form-select" id="generalDeviceSelect">
+                        <option value="" selected>— Choose a lab device —</option>
+                        {% for d in devices %}
+                        <option value="{{ d.name }}">{{ d.name }}</option>
                         {% endfor %}
                     </select>
                 </div>
 
-                <div class="mb-3">
-                    <label class="form-label">Device / Potentiostat</label>
-                    {% set selected_eq = form_data.equipment_selection or '' %}
-                    <select class="form-select" name="equipment_selection" id="equipmentSelect" required {% if not devices and not potentiostats %}disabled{% endif %}>
-                        <option value="" disabled {% if not selected_eq %}selected{% endif %}>— Select a device or potentiostat —</option>
-                        {% if devices %}
-                        <optgroup label="🔬 General Lab Devices">
-                            {% for d in devices %}
-                            {% set val = "device::" ~ d.name %}
-                            <option value="{{ val }}" {% if val == selected_eq %}selected{% endif %}>{{ d.name }}</option>
-                            {% endfor %}
-                        </optgroup>
-                        {% endif %}
-                        {% if potentiostats %}
-                        <optgroup label="⚡ Potentiostats">
-                            {% for p in potentiostats %}
-                            {% set val = "potentiostat::" ~ p.id %}
-                            <option value="{{ val }}" {% if val == selected_eq %}selected{% endif %}>⚡ {{ p.name }}</option>
-                            {% endfor %}
-                        </optgroup>
-                        {% endif %}
+                <!-- Step 2b: Potentiostat + Channel Picker -->
+                <div id="potentiostatSection" class="mb-3 d-none">
+                    <label class="form-label fw-semibold">3. Select Potentiostat</label>
+                    <select class="form-select mb-3" id="potentiostatSelect">
+                        <option value="" selected>— Choose a potentiostat —</option>
+                        {% for p in potentiostats %}
+                        <option value="{{ p.id }}">⚡ {{ p.name }}</option>
+                        {% endfor %}
                     </select>
-                    <div class="form-text">Selecting a Potentiostat opens its channel list below (separated into 2 categories).</div>
-                </div>
 
-                <!-- Dynamic Potentiostat Channel Picker (opens automatically when a Potentiostat is selected) -->
-                <div id="potentiostatChannelsBox" class="mb-3 p-3 bg-light rounded border border-primary d-none">
-                    <div class="fw-semibold text-primary mb-2" id="potChannelsHeader">⚡ Select Channel(s)</div>
-                    <div id="potNoChannelsAlert" class="alert alert-warning py-2 small mb-0 d-none">
-                        This potentiostat has no channels configured yet. Ask the admin to add channels in the Admin Panel.
-                    </div>
-                    <div class="row g-3" id="potChannelsColumns">
-                        <div class="col-md-6">
-                            <div class="border rounded p-2 bg-white h-100">
-                                <div class="small fw-bold text-uppercase text-primary mb-2" id="cat1Heading">{{ pot_cat_labels['1'] }}</div>
-                                <div id="cat1ChannelList" class="d-flex flex-column gap-1"></div>
+                    <div id="potentiostatChannelsBox" class="p-3 bg-light rounded border border-primary d-none">
+                        <div class="fw-semibold text-primary mb-2" id="potChannelsHeader">⚡ Select Channel(s)</div>
+                        <div id="potNoChannelsAlert" class="alert alert-warning py-2 small mb-0 d-none">
+                            This potentiostat has no channels configured yet. Ask the admin to add channels in the Admin Panel.
+                        </div>
+                        <div class="row g-3" id="potChannelsColumns">
+                            <div class="col-md-6">
+                                <div class="border rounded p-2 bg-white h-100">
+                                    <div class="small fw-bold text-uppercase text-primary mb-2">{{ pot_cat_labels['1'] }}</div>
+                                    <div id="cat1ChannelList" class="d-flex flex-column gap-1"></div>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="border rounded p-2 bg-white h-100">
+                                    <div class="small fw-bold text-uppercase text-success mb-2">{{ pot_cat_labels['2'] }}</div>
+                                    <div id="cat2ChannelList" class="d-flex flex-column gap-1"></div>
+                                </div>
                             </div>
                         </div>
-                        <div class="col-md-6">
-                            <div class="border rounded p-2 bg-white h-100">
-                                <div class="small fw-bold text-uppercase text-success mb-2" id="cat2Heading">{{ pot_cat_labels['2'] }}</div>
-                                <div id="cat2ChannelList" class="d-flex flex-column gap-1"></div>
-                            </div>
+                        <div class="form-text mt-2">Select one or more channels to open their live hourly availability calendar below.</div>
+                    </div>
+                </div>
+
+                <!-- Step 3: Interactive Weekly Hourly Availability Calendar -->
+                <div id="hourlyCalendarSection" class="mb-4 d-none">
+                    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">
+                        <div>
+                            <h5 class="mb-0" id="calActiveTargetTitle">📅 Hourly Availability Calendar</h5>
+                            <div class="small text-muted">Click any starting hour slot below to begin your booking.</div>
+                        </div>
+                        <div class="d-flex align-items-center flex-wrap gap-2">
+                            <button type="button" class="btn btn-outline-secondary btn-sm" id="prevWeekBtn">&laquo; Prev Week</button>
+                            <button type="button" class="btn btn-outline-secondary btn-sm" id="thisWeekBtn">Today</button>
+                            <button type="button" class="btn btn-outline-secondary btn-sm" id="nextWeekBtn">Next Week &raquo;</button>
+                            <input type="date" class="form-control form-control-sm" id="jumpDateInput"
+                                   style="width: 145px;" title="Jump calendar to date">
                         </div>
                     </div>
-                    <div class="form-text mt-2">Select one or more channels. Conflicts are checked per individual channel and time slot.</div>
-                </div>
 
-                <div class="mb-3">
-                    <label class="form-label">Experiment Details</label>
-                    <textarea class="form-control" name="experiment_details" rows="3" maxlength="2000"
-                              placeholder="Brief description of what you're running">{{ form_data.experiment_details or '' }}</textarea>
-                </div>
-
-                <div class="row">
-                    <div class="col-md-6 mb-3">
-                        <label class="form-label">Start Date</label>
-                        <input type="date" class="form-control" name="start_date" required min="2020-01-01" max="2100-12-31"
-                               value="{{ form_data.start_date or '' }}">
+                    <!-- Color Legend -->
+                    <div class="mb-2 small d-flex flex-wrap gap-3 align-items-center">
+                        <span><span class="badge bg-white text-dark border">&nbsp;&nbsp;</span> Available</span>
+                        <span><span class="badge" style="background-color:#dc3545;">&nbsp;&nbsp;</span> Booked (other user — clicking sends to Manager for approval)</span>
+                        <span><span class="badge" style="background-color:#198754;">&nbsp;&nbsp;</span> Your existing booking</span>
+                        <span><span class="badge" style="background-color:#0d6efd;">&nbsp;&nbsp;</span> Your new selection</span>
                     </div>
-                    <div class="col-md-6 mb-3">
-                        <label class="form-label">End Date</label>
-                        <input type="date" class="form-control" name="end_date" required min="2020-01-01" max="2100-12-31"
-                               value="{{ form_data.end_date or '' }}">
+
+                    <div class="table-responsive border rounded" style="max-height: 520px; overflow-y: auto;">
+                        <table class="table table-bordered table-sm text-center align-middle mb-0" id="weekHourlyTable" style="font-size: 0.8rem;">
+                            <thead class="table-light sticky-top" style="z-index: 2;">
+                                <tr id="weekHeaderRow"></tr>
+                            </thead>
+                            <tbody id="weekHourlyBody"></tbody>
+                        </table>
                     </div>
                 </div>
 
-                <!-- Optional Hourly Breakdown -->
-                <div class="mb-3 p-3 bg-light rounded border">
-                    <div class="form-check">
-                        <input class="form-check-input" type="checkbox" id="useHoursCheck" name="use_hours" value="1"
-                               {% if form_data.use_hours %}checked{% endif %}>
-                        <label class="form-check-label fw-semibold" for="useHoursCheck">
-                            🕒 Specify Specific Hours (optional — leave unchecked for All Day)
-                        </label>
+                <!-- Step 4: "Until When?" Panel (opens after clicking a starting hour on the calendar) -->
+                <div id="untilWhenSection" class="p-3 mb-3 rounded border border-primary bg-light d-none">
+                    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">
+                        <h5 class="mb-0 text-primary">🕒 Confirm Booking Range — Until When?</h5>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" id="clearSelectionBtn">Clear Selection</button>
                     </div>
-                    <div id="hoursFields" class="row mt-2 {% if not form_data.use_hours %}d-none{% endif %}">
-                        <div class="col-md-6 mb-2 mb-md-0">
-                            <label class="form-label small mb-1">Start Time</label>
-                            <input type="time" class="form-control" id="startTimeInput" name="start_time"
-                                   value="{{ form_data.start_time or '09:00' }}">
+                    <p class="small text-muted mb-3">
+                        You picked a starting hour on the calendar. Choose <strong>until what date and time</strong> you want to book it.
+                    </p>
+
+                    <div id="liveConflictWarning" class="alert alert-warning small py-2 d-none"></div>
+
+                    <div class="row g-3 mb-2">
+                        <div class="col-md-3">
+                            <label class="form-label small fw-semibold mb-1">Start Date</label>
+                            <input type="date" class="form-control form-control-sm" name="start_date" id="startDateInput"
+                                   required min="2020-01-01" max="2100-12-31"
+                                   value="{{ form_data.start_date or '' }}">
                         </div>
-                        <div class="col-md-6">
-                            <label class="form-label small mb-1">End Time</label>
-                            <input type="time" class="form-control" id="endTimeInput" name="end_time"
-                                   value="{{ form_data.end_time or '17:00' }}">
+                        <div class="col-md-3">
+                            <label class="form-label small fw-semibold mb-1">Start Time</label>
+                            <input type="time" class="form-control form-control-sm" name="start_time" id="startTimeInput"
+                                   value="{{ form_data.start_time or '' }}">
                         </div>
-                        <div class="form-text mt-1">Only the chosen hour window will be reserved on each booked day; other hours remain free for other lab members.</div>
+                        <div class="col-md-3">
+                            <label class="form-label small fw-semibold mb-1">Until Date (End Date)</label>
+                            <input type="date" class="form-control form-control-sm" name="end_date" id="endDateInput"
+                                   required min="2020-01-01" max="2100-12-31"
+                                   value="{{ form_data.end_date or '' }}">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small fw-semibold mb-1">Until Time (End Time)</label>
+                            <input type="time" class="form-control form-control-sm" name="end_time" id="endTimeInput"
+                                   value="{{ form_data.end_time or '' }}">
+                        </div>
                     </div>
-                </div>
 
-                <button type="submit" class="btn btn-primary w-100 mt-2" {% if not devices and not potentiostats %}disabled{% endif %}>Submit Request</button>
+                    <!-- Quick Duration Helpers -->
+                    <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+                        <span class="small text-muted">Quick duration:</span>
+                        <button type="button" class="btn btn-outline-secondary btn-sm py-0 px-2 quick-dur-btn" data-hours="1">+1 hr</button>
+                        <button type="button" class="btn btn-outline-secondary btn-sm py-0 px-2 quick-dur-btn" data-hours="2">+2 hrs</button>
+                        <button type="button" class="btn btn-outline-secondary btn-sm py-0 px-2 quick-dur-btn" data-hours="4">+4 hrs</button>
+                        <button type="button" class="btn btn-outline-secondary btn-sm py-0 px-2" id="until17Btn">Until 17:00</button>
+                        <button type="button" class="btn btn-outline-secondary btn-sm py-0 px-2" id="allDayBtn">All Day</button>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label small fw-semibold mb-1">Experiment Details (optional)</label>
+                        <textarea class="form-control form-control-sm" name="experiment_details" rows="2" maxlength="2000"
+                                  placeholder="Brief description of what you're running">{{ form_data.experiment_details or '' }}</textarea>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary w-100 fw-semibold" id="submitBookingBtn">
+                        ✅ Submit Booking Request
+                    </button>
+                </div>
             </form>
         </div>
     </div>
@@ -131,9 +198,19 @@
 
 <script>
 const POTENTIOSTATS = {{ potentiostats | tojson }};
+const INITIAL_EQ_SELECTION = {{ (form_data.equipment_selection or "") | tojson }};
 const PRESELECTED_CHANNELS = new Set({{ (form_data.channel_ids or []) | tojson }});
 
-const equipmentSelect = document.getElementById("equipmentSelect");
+const userNameSelect = document.getElementById("userNameSelect");
+const eqSelectionInput = document.getElementById("equipmentSelectionInput");
+const useHoursInput = document.getElementById("useHoursInput");
+
+const catDeviceBtn = document.getElementById("catDeviceBtn");
+const catPotBtn = document.getElementById("catPotBtn");
+const generalDeviceSection = document.getElementById("generalDeviceSection");
+const generalDeviceSelect = document.getElementById("generalDeviceSelect");
+const potentiostatSection = document.getElementById("potentiostatSection");
+const potentiostatSelect = document.getElementById("potentiostatSelect");
 const potBox = document.getElementById("potentiostatChannelsBox");
 const potHeader = document.getElementById("potChannelsHeader");
 const potNoChannels = document.getElementById("potNoChannelsAlert");
@@ -141,19 +218,356 @@ const potColumns = document.getElementById("potChannelsColumns");
 const cat1List = document.getElementById("cat1ChannelList");
 const cat2List = document.getElementById("cat2ChannelList");
 
-function renderPotentiostatChannels() {
-    const val = equipmentSelect ? equipmentSelect.value : "";
-    if (!val || !val.startsWith("potentiostat::")) {
-        potBox.classList.add("d-none");
-        cat1List.innerHTML = "";
-        cat2List.innerHTML = "";
+const hourlyCalendarSection = document.getElementById("hourlyCalendarSection");
+const calActiveTargetTitle = document.getElementById("calActiveTargetTitle");
+const weekHeaderRow = document.getElementById("weekHeaderRow");
+const weekHourlyBody = document.getElementById("weekHourlyBody");
+const jumpDateInput = document.getElementById("jumpDateInput");
+
+const untilWhenSection = document.getElementById("untilWhenSection");
+const liveConflictWarning = document.getElementById("liveConflictWarning");
+const startDateInput = document.getElementById("startDateInput");
+const startTimeInput = document.getElementById("startTimeInput");
+const endDateInput = document.getElementById("endDateInput");
+const endTimeInput = document.getElementById("endTimeInput");
+const submitBookingBtn = document.getElementById("submitBookingBtn");
+
+const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const HOLIDAYS_CACHE = {};
+let activeCategory = null; // "device" | "potentiostat"
+let activeBookings = [];   // fetched live bookings for the chosen device/channel(s)
+let weekStartDate = getSundayOfWeek(new Date());
+
+function pad(n) { return n < 10 ? "0" + n : "" + n; }
+
+function formatISO(d) {
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function getSundayOfWeek(d) {
+    const copy = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    copy.setDate(copy.getDate() - copy.getDay());
+    return copy;
+}
+
+function addDays(d, n) {
+    const copy = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    copy.setDate(copy.getDate() + n);
+    return copy;
+}
+
+function timeToMin(t, fallback) {
+    if (!t) return fallback;
+    if (t === "24:00") return 1440;
+    const parts = t.split(":");
+    return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
+}
+
+// Compare continuous interval endpoints [dateStr, minutes]
+function comparePoint(dateA, minA, dateB, minB) {
+    if (dateA !== dateB) return dateA < dateB ? -1 : 1;
+    return minA - minB;
+}
+
+function bookingCoversSlot(b, dateStr, hourStartMin, hourEndMin) {
+    const bsDate = b.start_date;
+    const bsMin = timeToMin(b.start_time, 0);
+    const beDate = b.end_date;
+    const beMin = timeToMin(b.end_time, 1440);
+    // Overlap iff B_start < (dateStr, hourEndMin) AND B_end > (dateStr, hourStartMin)
+    return comparePoint(bsDate, bsMin, dateStr, hourEndMin) < 0 &&
+           comparePoint(beDate, beMin, dateStr, hourStartMin) > 0;
+}
+
+function selectionCoversSlot(dateStr, hourStartMin, hourEndMin) {
+    const sd = startDateInput.value;
+    const ed = endDateInput.value;
+    if (!sd || !ed) return false;
+    const isAllDay = !useHoursInput.value;
+    const sm = isAllDay ? 0 : timeToMin(startTimeInput.value, 0);
+    const em = isAllDay ? 1440 : timeToMin(endTimeInput.value, 1440);
+    if (comparePoint(sd, sm, ed, em) >= 0) return false;
+    return comparePoint(sd, sm, dateStr, hourEndMin) < 0 &&
+           comparePoint(ed, em, dateStr, hourStartMin) > 0;
+}
+
+function getSelectedEquipmentNames() {
+    if (activeCategory === "device") {
+        const d = generalDeviceSelect.value;
+        return d ? [d] : [];
+    }
+    if (activeCategory === "potentiostat") {
+        const potId = parseInt(potentiostatSelect.value, 10);
+        const pot = POTENTIOSTATS.find(p => p.id === potId);
+        if (!pot) return [];
+        const checked = Array.from(document.querySelectorAll('input[name="channel_ids"]:checked'))
+            .map(el => parseInt(el.value, 10));
+        return pot.channels
+            .filter(c => checked.includes(c.id))
+            .map(c => `${pot.name} — ${c.name}`);
+    }
+    return [];
+}
+
+async function ensureHolidaysLoaded(year) {
+    if (HOLIDAYS_CACHE[year]) return HOLIDAYS_CACHE[year];
+    try {
+        const res = await fetch(`/api/holidays?year=${year}`);
+        HOLIDAYS_CACHE[year] = res.ok ? await res.json() : {};
+    } catch (e) {
+        HOLIDAYS_CACHE[year] = {};
+    }
+    return HOLIDAYS_CACHE[year];
+}
+
+async function loadBookingsAndRenderCalendar() {
+    const names = getSelectedEquipmentNames();
+    if (!names.length) {
+        hourlyCalendarSection.classList.add("d-none");
+        untilWhenSection.classList.add("d-none");
+        activeBookings = [];
         return;
     }
 
-    const potId = parseInt(val.slice("potentiostat::".length), 10);
+    calActiveTargetTitle.textContent = `📅 Hourly Availability — ${names.join(", ")}`;
+    hourlyCalendarSection.classList.remove("d-none");
+
+    const params = new URLSearchParams();
+    names.forEach(n => params.append("equipment", n));
+    try {
+        const res = await fetch(`/api/equipment-bookings?${params.toString()}`);
+        activeBookings = res.ok ? await res.json() : [];
+    } catch (e) {
+        activeBookings = [];
+    }
+
+    await ensureHolidaysLoaded(weekStartDate.getFullYear());
+    const weekEnd = addDays(weekStartDate, 6);
+    if (weekEnd.getFullYear() !== weekStartDate.getFullYear()) {
+        await ensureHolidaysLoaded(weekEnd.getFullYear());
+    }
+    renderWeekCalendar();
+    updateConflictBanner();
+}
+
+function renderWeekCalendar() {
+    jumpDateInput.value = formatISO(weekStartDate);
+    const currentUser = userNameSelect.value || "";
+    const todayISO = formatISO(new Date());
+
+    // Build header row: Time + 7 days (Sun..Sat)
+    weekHeaderRow.innerHTML = "";
+    const timeTh = document.createElement("th");
+    timeTh.textContent = "Hour";
+    timeTh.style.width = "64px";
+    weekHeaderRow.appendChild(timeTh);
+
+    const weekDays = [];
+    for (let i = 0; i < 7; i++) {
+        const d = addDays(weekStartDate, i);
+        const iso = formatISO(d);
+        const holName = (HOLIDAYS_CACHE[d.getFullYear()] || {})[iso] || "";
+        const isWeekend = (d.getDay() === 5 || d.getDay() === 6);
+        weekDays.push({ date: d, iso, holName, isWeekend });
+
+        const th = document.createElement("th");
+        th.style.minWidth = "105px";
+        if (iso === todayISO) th.classList.add("table-primary");
+        else if (holName) th.style.backgroundColor = "#f3e8ff";
+        else if (isWeekend) th.style.backgroundColor = "#edf4fb";
+
+        const label = document.createElement("div");
+        label.textContent = `${DAY_NAMES[d.getDay()]} ${pad(d.getDate())}/${pad(d.getMonth() + 1)}`;
+        th.appendChild(label);
+
+        if (holName) {
+            const hSmall = document.createElement("div");
+            hSmall.className = "text-muted fw-normal text-truncate";
+            hSmall.style.fontSize = "0.68rem";
+            hSmall.style.maxWidth = "110px";
+            hSmall.title = holName;
+            hSmall.textContent = holName;
+            th.appendChild(hSmall);
+        }
+        weekHeaderRow.appendChild(th);
+    }
+
+    // Build 24 hourly rows (00:00..23:00)
+    weekHourlyBody.innerHTML = "";
+    for (let h = 0; h < 24; h++) {
+        const tr = document.createElement("tr");
+        const hStart = h * 60;
+        const hEnd = (h + 1) * 60;
+
+        const hourTd = document.createElement("td");
+        hourTd.className = "fw-semibold text-muted bg-light text-nowrap";
+        hourTd.textContent = `${pad(h)}:00`;
+        tr.appendChild(hourTd);
+
+        for (const wd of weekDays) {
+            const td = document.createElement("td");
+            td.style.cursor = "pointer";
+            td.style.height = "26px";
+            td.style.padding = "2px 4px";
+
+            const matching = activeBookings.filter(b => bookingCoversSlot(b, wd.iso, hStart, hEnd));
+            const isSelected = selectionCoversSlot(wd.iso, hStart, hEnd);
+
+            const hasMine = matching.some(b => b.user_name === currentUser);
+            const hasOthers = matching.some(b => b.user_name !== currentUser);
+
+            if (isSelected) {
+                if (hasOthers) {
+                    // User selected over an existing red booking -> blue with bold red border
+                    td.style.backgroundColor = "#0d6efd";
+                    td.style.color = "#fff";
+                    td.style.boxShadow = "inset 0 0 0 2px #dc3545";
+                    td.textContent = "⚠️ Selected";
+                } else {
+                    td.style.backgroundColor = "#0d6efd";
+                    td.style.color = "#fff";
+                    td.textContent = "Selected";
+                }
+            } else if (hasOthers) {
+                td.style.backgroundColor = "#dc3545";
+                td.style.color = "#fff";
+                const names = [...new Set(matching.map(b => b.user_name))].join(", ");
+                td.textContent = names;
+            } else if (hasMine) {
+                td.style.backgroundColor = "#198754";
+                td.style.color = "#fff";
+                td.textContent = "Yours";
+            } else {
+                // Available -> no color!
+                td.style.backgroundColor = "";
+                td.textContent = "";
+            }
+
+            const tips = [];
+            if (matching.length) {
+                matching.forEach(b => {
+                    tips.push(
+                        `${b.user_name} — ${b.equipment} (${b.start_date} ${b.start_time || '00:00'} → ${b.end_date} ${b.end_time || '24:00'})` +
+                        (b.status === "pending" ? " [Pending]" : "") +
+                        (b.experiment_details ? `: ${b.experiment_details}` : "")
+                    );
+                });
+            } else {
+                tips.push(`${wd.iso} ${pad(h)}:00 — Available (click to start booking here)`);
+            }
+            td.title = tips.join("\n");
+
+            td.addEventListener("click", () => handleStartHourClick(wd.iso, h));
+            tr.appendChild(td);
+        }
+        weekHourlyBody.appendChild(tr);
+    }
+}
+
+function handleStartHourClick(dateISO, hour) {
+    useHoursInput.value = "1";
+    startDateInput.value = dateISO;
+    startTimeInput.value = `${pad(hour)}:00`;
+    startTimeInput.required = true;
+    endTimeInput.required = true;
+
+    // Default end time = +1 hour (if hour === 23, next day 00:00)
+    if (hour < 23) {
+        endDateInput.value = dateISO;
+        endTimeInput.value = `${pad(hour + 1)}:00`;
+    } else {
+        const nextDay = addDays(new Date(dateISO + "T00:00:00"), 1);
+        endDateInput.value = formatISO(nextDay);
+        endTimeInput.value = "00:00";
+    }
+
+    untilWhenSection.classList.remove("d-none");
+    renderWeekCalendar();
+    updateConflictBanner();
+    untilWhenSection.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    endTimeInput.focus();
+}
+
+function updateConflictBanner() {
+    const sd = startDateInput.value;
+    const ed = endDateInput.value;
+    if (!sd || !ed) {
+        liveConflictWarning.classList.add("d-none");
+        return;
+    }
+    const isAllDay = !useHoursInput.value;
+    const sm = isAllDay ? 0 : timeToMin(startTimeInput.value, 0);
+    const em = isAllDay ? 1440 : timeToMin(endTimeInput.value, 1440);
+
+    if (comparePoint(sd, sm, ed, em) >= 0) {
+        liveConflictWarning.className = "alert alert-danger small py-2";
+        liveConflictWarning.textContent = "End date & time must be after start date & time.";
+        liveConflictWarning.classList.remove("d-none");
+        submitBookingBtn.disabled = true;
+        return;
+    }
+    submitBookingBtn.disabled = false;
+
+    const overlapping = activeBookings.filter(b => {
+        const bsMin = timeToMin(b.start_time, 0);
+        const beMin = timeToMin(b.end_time, 1440);
+        return comparePoint(sd, sm, b.end_date, beMin) < 0 &&
+               comparePoint(ed, em, b.start_date, bsMin) > 0;
+    });
+
+    if (overlapping.length > 0) {
+        const summary = overlapping
+            .map(b => `${b.user_name} (${b.equipment}: ${b.start_date} ${b.start_time || 'All Day'} → ${b.end_date} ${b.end_time || ''})`)
+            .join("; ");
+        liveConflictWarning.className = "alert alert-warning small py-2";
+        liveConflictWarning.innerHTML =
+            `<strong>⚠️ Overlap Detected:</strong> Your selected time overlaps an existing booking: ${escapeHtml(summary)}. ` +
+            `You can still submit — your booking request will be sent to the <strong>Lab Manager / Admin</strong> for approval.`;
+        liveConflictWarning.classList.remove("d-none");
+    } else {
+        liveConflictWarning.classList.add("d-none");
+    }
+}
+
+function escapeHtml(text) {
+    const div = document.createElement("div");
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// Category switcher
+function setCategory(cat) {
+    activeCategory = cat;
+    catDeviceBtn.classList.toggle("btn-primary", cat === "device");
+    catDeviceBtn.classList.toggle("btn-outline-primary", cat !== "device");
+    catPotBtn.classList.toggle("btn-primary", cat === "potentiostat");
+    catPotBtn.classList.toggle("btn-outline-primary", cat !== "potentiostat");
+
+    generalDeviceSection.classList.toggle("d-none", cat !== "device");
+    potentiostatSection.classList.toggle("d-none", cat !== "potentiostat");
+
+    syncHiddenSelectionAndReload();
+}
+
+function syncHiddenSelectionAndReload() {
+    if (activeCategory === "device") {
+        eqSelectionInput.value = generalDeviceSelect.value ? `device::${generalDeviceSelect.value}` : "";
+    } else if (activeCategory === "potentiostat") {
+        eqSelectionInput.value = potentiostatSelect.value ? `potentiostat::${potentiostatSelect.value}` : "";
+    } else {
+        eqSelectionInput.value = "";
+    }
+    loadBookingsAndRenderCalendar();
+}
+
+function renderPotentiostatChannels() {
+    const potId = parseInt(potentiostatSelect.value, 10);
     const pot = POTENTIOSTATS.find(p => p.id === potId);
     if (!pot) {
         potBox.classList.add("d-none");
+        cat1List.innerHTML = "";
+        cat2List.innerHTML = "";
+        syncHiddenSelectionAndReload();
         return;
     }
 
@@ -168,6 +582,7 @@ function renderPotentiostatChannels() {
     if (!pot.channels.length) {
         potNoChannels.classList.remove("d-none");
         potColumns.classList.add("d-none");
+        syncHiddenSelectionAndReload();
         return;
     }
 
@@ -192,6 +607,7 @@ function renderPotentiostatChannels() {
             input.value = String(ch.id);
             input.id = `pot_ch_${ch.id}`;
             if (PRESELECTED_CHANNELS.has(ch.id)) input.checked = true;
+            input.addEventListener("change", () => syncHiddenSelectionAndReload());
 
             const lbl = document.createElement("label");
             lbl.className = "form-check-label small";
@@ -207,30 +623,108 @@ function renderPotentiostatChannels() {
 
     populate(cat1List, ch1);
     populate(cat2List, ch2);
+    syncHiddenSelectionAndReload();
 }
 
-if (equipmentSelect) {
-    equipmentSelect.addEventListener("change", renderPotentiostatChannels);
-    renderPotentiostatChannels();
-}
+// Event listeners
+catDeviceBtn.addEventListener("click", () => setCategory("device"));
+catPotBtn.addEventListener("click", () => setCategory("potentiostat"));
+generalDeviceSelect.addEventListener("change", () => syncHiddenSelectionAndReload());
+potentiostatSelect.addEventListener("change", () => renderPotentiostatChannels());
+userNameSelect.addEventListener("change", () => renderWeekCalendar());
 
-const useHoursCheck = document.getElementById("useHoursCheck");
-const hoursFields = document.getElementById("hoursFields");
-const startTimeInput = document.getElementById("startTimeInput");
-const endTimeInput = document.getElementById("endTimeInput");
+document.getElementById("prevWeekBtn").addEventListener("click", () => {
+    weekStartDate = addDays(weekStartDate, -7);
+    loadBookingsAndRenderCalendar();
+});
+document.getElementById("nextWeekBtn").addEventListener("click", () => {
+    weekStartDate = addDays(weekStartDate, 7);
+    loadBookingsAndRenderCalendar();
+});
+document.getElementById("thisWeekBtn").addEventListener("click", () => {
+    weekStartDate = getSundayOfWeek(new Date());
+    loadBookingsAndRenderCalendar();
+});
+jumpDateInput.addEventListener("change", () => {
+    if (jumpDateInput.value) {
+        weekStartDate = getSundayOfWeek(new Date(jumpDateInput.value + "T00:00:00"));
+        loadBookingsAndRenderCalendar();
+    }
+});
 
-function syncHoursVisibility() {
-    if (useHoursCheck.checked) {
-        hoursFields.classList.remove("d-none");
+[startDateInput, startTimeInput, endDateInput, endTimeInput].forEach(el => {
+    el.addEventListener("change", () => {
+        if (startTimeInput.value && endTimeInput.value) {
+            useHoursInput.value = "1";
+        }
+        renderWeekCalendar();
+        updateConflictBanner();
+    });
+});
+
+document.querySelectorAll(".quick-dur-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+        if (!startDateInput.value) return;
+        const hrs = parseInt(btn.getAttribute("data-hours"), 10);
+        const sm = timeToMin(startTimeInput.value || "09:00", 540);
+        const totalMin = sm + hrs * 60;
+        const dayOffset = Math.floor(totalMin / 1440);
+        const remMin = totalMin % 1440;
+        const endD = addDays(new Date(startDateInput.value + "T00:00:00"), dayOffset);
+        useHoursInput.value = "1";
         startTimeInput.required = true;
         endTimeInput.required = true;
-    } else {
-        hoursFields.classList.add("d-none");
-        startTimeInput.required = false;
-        endTimeInput.required = false;
-    }
+        endDateInput.value = formatISO(endD);
+        endTimeInput.value = `${pad(Math.floor(remMin / 60))}:${pad(remMin % 60)}`;
+        renderWeekCalendar();
+        updateConflictBanner();
+    });
+});
+
+document.getElementById("until17Btn").addEventListener("click", () => {
+    if (!startDateInput.value) return;
+    useHoursInput.value = "1";
+    startTimeInput.required = true;
+    endTimeInput.required = true;
+    endDateInput.value = startDateInput.value;
+    endTimeInput.value = "17:00";
+    renderWeekCalendar();
+    updateConflictBanner();
+});
+
+document.getElementById("allDayBtn").addEventListener("click", () => {
+    if (!startDateInput.value) return;
+    useHoursInput.value = "";
+    startTimeInput.value = "";
+    endTimeInput.value = "";
+    startTimeInput.required = false;
+    endTimeInput.required = false;
+    endDateInput.value = startDateInput.value;
+    renderWeekCalendar();
+    updateConflictBanner();
+});
+
+document.getElementById("clearSelectionBtn").addEventListener("click", () => {
+    startDateInput.value = "";
+    startTimeInput.value = "";
+    endDateInput.value = "";
+    endTimeInput.value = "";
+    untilWhenSection.classList.add("d-none");
+    renderWeekCalendar();
+});
+
+// Restore previous selection on validation error re-render
+if (INITIAL_EQ_SELECTION.startsWith("device::")) {
+    const dev = INITIAL_EQ_SELECTION.slice("device::".length);
+    generalDeviceSelect.value = dev;
+    setCategory("device");
+    if (startDateInput.value) untilWhenSection.classList.remove("d-none");
+} else if (INITIAL_EQ_SELECTION.startsWith("potentiostat::")) {
+    const pid = INITIAL_EQ_SELECTION.slice("potentiostat::".length);
+    potentiostatSelect.value = pid;
+    setCategory("potentiostat");
+    renderPotentiostatChannels();
+    if (startDateInput.value) untilWhenSection.classList.remove("d-none");
 }
-useHoursCheck.addEventListener("change", syncHoursVisibility);
-syncHoursVisibility();
 </script>
 {% endblock %}

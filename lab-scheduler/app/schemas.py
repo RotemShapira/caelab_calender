@@ -8,7 +8,8 @@ MAX_BOOKING_SPAN_DAYS = 365
 MIN_YEAR = 2020
 MAX_YEAR = 2100
 
-_TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+_START_TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+_END_TIME_RE = re.compile(r"^(([01]\d|2[0-3]):([0-5]\d)|24:00)$")
 
 
 class BookingCreate(BaseModel):
@@ -40,16 +41,28 @@ class BookingCreate(BaseModel):
             raise ValueError(f"Experiment details must be at most {MAX_DETAILS_LENGTH} characters.")
         return v
 
-    @field_validator("start_time", "end_time")
+    @field_validator("start_time")
     @classmethod
-    def validate_time_format(cls, v: str | None) -> str | None:
+    def validate_start_time(cls, v: str | None) -> str | None:
         if v is None:
             return None
         v = v.strip()
         if not v:
             return None
-        if not _TIME_RE.match(v):
-            raise ValueError("Time must be in 24-hour HH:MM format (e.g. 09:00).")
+        if not _START_TIME_RE.match(v):
+            raise ValueError("Start time must be in 24-hour HH:MM format (e.g. 09:00).")
+        return v
+
+    @field_validator("end_time")
+    @classmethod
+    def validate_end_time(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            return None
+        if not _END_TIME_RE.match(v):
+            raise ValueError("End time must be in 24-hour HH:MM format (e.g. 17:00).")
         return v
 
     @field_validator("start_date")
@@ -76,7 +89,7 @@ class BookingCreate(BaseModel):
     def validate_time_pair(self):
         if bool(self.start_time) != bool(self.end_time):
             raise ValueError("Please provide both Start Time and End Time, or leave both blank for All Day.")
-        if self.start_time and self.end_time:
+        if self.start_time and self.end_time and self.start_date == self.end_date:
             if self.end_time <= self.start_time:
-                raise ValueError("End time must be after start time.")
+                raise ValueError("End time must be after start time when booking on the same day.")
         return self
