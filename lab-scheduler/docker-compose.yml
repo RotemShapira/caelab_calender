@@ -1,19 +1,35 @@
+networks:
+  # Dedicated bridge interface `br-labsched` so setup_truenas.sh can block
+  # outbound access to your private LAN / TrueNAS host via DOCKER-USER iptables
+  # without affecting any other containers on the machine.
+  lab_scheduler_isolated:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: br-labsched
+
 services:
   # ---------------------------------------------------------------------------
-  # Isolated Tailscale Funnel Sidecar
+  # Hardened Isolated Tailscale Funnel Sidecar
   # Exposes ONLY the Lab Scheduler over public HTTPS (https://lab-scheduler.<tailnet>.ts.net)
-  # in unprivileged userspace mode — no host networking, no router port forwarding,
-  # and no plain-HTTP host port exposed on the LAN.
+  # in unprivileged userspace mode — read-only FS, zero capabilities, no host ports.
   # ---------------------------------------------------------------------------
   ts-funnel:
-    image: tailscale/tailscale:latest
+    image: tailscale/tailscale:stable
     container_name: lab-scheduler-ts
     hostname: lab-scheduler
     restart: unless-stopped
+    networks:
+      - lab_scheduler_isolated
     command:
       - tailscaled
       - --tun=userspace-networking
       - --statedir=/var/lib/tailscale
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/run/tailscale
+    cap_drop:
+      - ALL
     volumes:
       - ./tailscale/state:/var/lib/tailscale
     security_opt:
@@ -50,7 +66,7 @@ services:
       ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
       ADMIN_PASSWORD: "${ADMIN_PASSWORD:-changeme}"
 
-      # --- Optional Google Calendar API key for Israeli holiday shading on /dashboard ---
+      # --- Optional Google Calendar API key ---
       GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
 
       # --- Optional webhook notification (Slack/Discord/n8n/Home Assistant) ---

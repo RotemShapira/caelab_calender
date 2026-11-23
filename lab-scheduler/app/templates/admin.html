@@ -144,7 +144,7 @@
                         </form>
                     {% endif %}
                     <form method="post" action="/admin/bookings/{{ b.id }}/delete" class="d-inline"
-                          onsubmit="return confirm('Permanently delete this denied booking? This cannot be undone.');">
+                          data-confirm="Permanently delete this denied booking? This cannot be undone.">
                         <button class="btn btn-sm btn-outline-dark" type="submit">Delete</button>
                     </form>
                 </td>
@@ -180,7 +180,7 @@
             <div class="border rounded px-3 py-1 bg-light d-flex align-items-center gap-2">
                 <span class="fw-semibold">{{ d.name }}</span>
                 <form method="post" action="/admin/devices/{{ d.id }}/delete" class="d-inline mb-0"
-                      onsubmit="return confirm('Remove device {{ d.name }} from the dropdown list? Existing bookings remain intact.');">
+                      data-confirm="Remove device {{ d.name }} from the dropdown list? Existing bookings remain intact.">
                     <button type="submit" class="btn btn-sm btn-outline-danger py-0 px-2" title="Remove device">&times;</button>
                 </form>
             </div>
@@ -235,7 +235,7 @@
                 <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">
                     <h6 class="mb-0 fw-bold">⚡ {{ p.name }} <span class="badge bg-light text-dark border ms-1">{{ p.channels|length }} channel(s)</span></h6>
                     <form method="post" action="/admin/potentiostats/{{ p.id }}/delete" class="d-inline mb-0"
-                          onsubmit="return confirm('Remove potentiostat {{ p.name }} and all its channels? Existing bookings remain intact.');">
+                          data-confirm="Remove potentiostat {{ p.name }} and all its channels? Existing bookings remain intact.">
                         <button type="submit" class="btn btn-sm btn-outline-danger py-0 px-2">Remove Potentiostat</button>
                     </form>
                 </div>
@@ -457,7 +457,7 @@
                     {% endif %}
                     {% if is_full_admin or not u.is_manager %}
                     <form method="post" action="/admin/users/{{ u.id }}/delete" class="d-inline"
-                          onsubmit="return confirm('Delete user {{ u.username }}?');">
+                          data-confirm="Delete user {{ u.username }}?">
                         <button type="submit" class="btn btn-sm btn-outline-danger">Delete User</button>
                     </form>
                     {% endif %}

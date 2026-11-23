@@ -38,6 +38,7 @@ from .models import (
 )
 from .security import (
     SESSION_TTL_SECONDS,
+    check_and_record_booking_rate_limit,
     clear_failed_attempts,
     create_session_token,
     hash_password,
@@ -271,8 +272,10 @@ def login_submit(
     verify_same_origin(request)
     client_ip = get_client_ip(request)
     clean_user = username.strip()
+    ip_key = f"ip:{client_ip}"
+    user_key = f"user:{clean_user.lower()}"
 
-    if is_rate_limited(client_ip):
+    if is_rate_limited(ip_key) or (clean_user and is_rate_limited(user_key)):
         return templates.TemplateResponse(
             "login.html",
             {
@@ -294,7 +297,9 @@ def login_submit(
     )
 
     if not (admin_ok or user_ok):
-        record_failed_attempt(client_ip)
+        record_failed_attempt(ip_key)
+        if clean_user:
+            record_failed_attempt(user_key)
         return templates.TemplateResponse(
             "login.html",
             {
@@ -305,14 +310,17 @@ def login_submit(
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
 
-    clear_failed_attempts(client_ip)
+    clear_failed_attempts(ip_key)
+    clear_failed_attempts(user_key)
     if admin_ok:
         role = "admin"
         matched_username = admin_rec.username
+        matched_hash = admin_rec.password_hash
     else:
         role = "manager" if user_rec.is_manager else "user"
         matched_username = user_rec.username
-    token = create_session_token(matched_username, role)
+        matched_hash = user_rec.password_hash
+    token = create_session_token(matched_username, role, matched_hash)
 
     is_https = request.headers.get("x-forwarded-proto", "").lower() == "https"
     resp = RedirectResponse(url="/", status_code=303)
@@ -388,7 +396,7 @@ def account_update_password(
 
     record.password_hash = hash_password(new_password)
     db.commit()
-    return templates.TemplateResponse(
+    resp = templates.TemplateResponse(
         "account.html",
         {
             "request": request,
@@ -397,6 +405,16 @@ def account_update_password(
             "success": True,
         },
     )
+    is_https = request.headers.get("x-forwarded-proto", "").lower() == "https"
+    resp.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=create_session_token(record.username, current_user["role"], record.password_hash),
+        max_age=SESSION_TTL_SECONDS,
+        httponly=True,
+        samesite="lax",
+        secure=is_https,
+    )
+    return resp
 
 
 # ---------------------------------------------------------------------------
@@ -406,12 +424,15 @@ def account_update_password(
 def booking_form(
     request: Request,
     db: Session = Depends(get_db),
-    _user: dict = Depends(require_user),
+    current_user: dict = Depends(require_user),
 ):
     devices = db.query(Device).order_by(Device.name).all()
     potentiostats = _get_potentiostats_payload(db)
     pot_cat_labels = _get_potentiostat_category_labels(db)
-    usernames = _get_allowed_usernames(db)
+    if current_user["role"] in ("admin", "manager"):
+        usernames = _get_allowed_usernames(db)
+    else:
+        usernames = [current_user["username"]]
     return templates.TemplateResponse(
         "index.html",
         {
@@ -439,19 +460,24 @@ def create_booking(
     start_time: str = Form(""),
     end_time: str = Form(""),
     db: Session = Depends(get_db),
-    _user: dict = Depends(require_user),
+    current_user: dict = Depends(require_user),
 ):
     devices = db.query(Device).order_by(Device.name).all()
     device_names = {d.name for d in devices}
     potentiostats = _get_potentiostats_payload(db)
     pot_cat_labels = _get_potentiostat_category_labels(db)
-    usernames = _get_allowed_usernames(db)
+    if current_user["role"] in ("admin", "manager"):
+        usernames = _get_allowed_usernames(db)
+        effective_user_name = user_name.strip()
+    else:
+        usernames = [current_user["username"]]
+        effective_user_name = current_user["username"]
 
     effective_start_time = start_time.strip() if use_hours else ""
     effective_end_time = end_time.strip() if use_hours else ""
 
     form_data = {
-        "user_name": user_name,
+        "user_name": effective_user_name,
         "equipment_selection": equipment_selection,
         "channel_ids": channel_ids,
         "experiment_details": experiment_details,
@@ -463,7 +489,9 @@ def create_booking(
     }
 
     errors: list[str] = []
-    if user_name.strip() not in usernames:
+    if not check_and_record_booking_rate_limit(current_user["username"]):
+        errors.append("Too many booking requests submitted in a short period. Please wait a few minutes and try again.")
+    if effective_user_name not in usernames:
         errors.append("Please select a valid user from the dropdown list.")
 
     # Resolve whether the user picked a General Device or a Potentiostat + Channel(s)
@@ -520,7 +548,7 @@ def create_booking(
         for t in targets:
             try:
                 validated = schemas.BookingCreate(
-                    user_name=user_name,
+                    user_name=effective_user_name,
                     equipment=t["equipment"],
                     experiment_details=experiment_details,
                     start_date=start_date,
@@ -1417,7 +1445,7 @@ def admin_settings_update(
         is_https = request.headers.get("x-forwarded-proto", "").lower() == "https"
         resp.set_cookie(
             key=SESSION_COOKIE_NAME,
-            value=create_session_token(record.username, "admin"),
+            value=create_session_token(record.username, "admin", record.password_hash),
             max_age=SESSION_TTL_SECONDS,
             httponly=True,
             samesite="lax",

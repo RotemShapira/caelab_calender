@@ -1,3 +1,4 @@
+import hmac
 from urllib.parse import urlparse
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -7,6 +8,7 @@ from .models import AdminCredential, User
 from .security import (
     clear_failed_attempts,
     is_rate_limited,
+    password_fingerprint,
     record_failed_attempt,
     verify_password_constant_time,
     verify_session_token,
@@ -21,12 +23,18 @@ class LoginRequiredException(Exception):
 
 
 def get_client_ip(request: Request) -> str:
+    """
+    Extract the client IP safely behind the local Tailscale Funnel proxy (127.0.0.1).
+    Tailscale appends the real client IP to the RIGHT of X-Forwarded-For, so we read
+    the rightmost entry (`[-1]`) instead of `[0]` (which an attacker could spoof).
+    """
+    peer = request.client.host if (request.client and request.client.host) else "unknown"
     forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    if request.client and request.client.host:
-        return request.client.host
-    return "unknown"
+    if forwarded and peer in ("127.0.0.1", "::1"):
+        parts = [p.strip() for p in forwarded.split(",") if p.strip()]
+        if parts:
+            return parts[-1]
+    return peer
 
 
 def verify_same_origin(request: Request) -> None:
@@ -64,8 +72,9 @@ def verify_same_origin(request: Request) -> None:
 def get_current_session(request: Request) -> dict | None:
     """
     Returns {"username": str, "role": "user" | "manager" | "admin"} if the
-    request carries a valid session cookie and the account still exists in DB.
-    Checks `User.is_manager` live so promotions/revocations apply immediately.
+    request carries a valid session cookie, the account still exists, AND its
+    password fingerprint still matches (instantly invalidating old cookies on
+    password change or reset).
     """
     token = request.cookies.get(SESSION_COOKIE_NAME)
     payload = verify_session_token(token)
@@ -74,19 +83,24 @@ def get_current_session(request: Request) -> dict | None:
 
     username = payload.get("u")
     token_role = payload.get("r")
-    if not username or token_role not in ("user", "manager", "admin"):
+    token_fp = payload.get("p") or ""
+    if not username or token_role not in ("user", "manager", "admin") or not token_fp:
         return None
 
     db = SessionLocal()
     try:
         if token_role == "admin":
-            exists = db.query(AdminCredential).filter(AdminCredential.username == username).first() is not None
-            if not exists:
+            rec = db.query(AdminCredential).filter(AdminCredential.username == username).first()
+            if rec is None:
                 return None
-            return {"username": username, "role": "admin"}
+            if not hmac.compare_digest(token_fp, password_fingerprint(rec.password_hash)):
+                return None
+            return {"username": rec.username, "role": "admin"}
         else:
             user = db.query(User).filter(User.username == username).first()
             if user is None:
+                return None
+            if not hmac.compare_digest(token_fp, password_fingerprint(user.password_hash)):
                 return None
             live_role = "manager" if user.is_manager else "user"
             return {"username": user.username, "role": live_role}
@@ -111,7 +125,8 @@ def _verify_basic_admin(
     credentials: HTTPBasicCredentials | None,
 ) -> str:
     client_ip = get_client_ip(request)
-    if is_rate_limited(client_ip):
+    ip_key = f"ip:{client_ip}"
+    if is_rate_limited(ip_key):
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Too many failed login attempts. Please wait 5 minutes before trying again.",
@@ -124,6 +139,13 @@ def _verify_basic_admin(
             headers={"WWW-Authenticate": "Basic"},
         )
 
+    user_key = f"user:{credentials.username.strip().lower()}"
+    if is_rate_limited(user_key):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many failed login attempts for this account. Please wait 5 minutes.",
+        )
+
     db = SessionLocal()
     try:
         record = (
@@ -133,13 +155,15 @@ def _verify_basic_admin(
         )
         stored_hash = record.password_hash if record is not None else None
         if not verify_password_constant_time(credentials.password, stored_hash):
-            record_failed_attempt(client_ip)
+            record_failed_attempt(ip_key)
+            record_failed_attempt(user_key)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid admin credentials",
                 headers={"WWW-Authenticate": "Basic"},
             )
-        clear_failed_attempts(client_ip)
+        clear_failed_attempts(ip_key)
+        clear_failed_attempts(user_key)
         return credentials.username
     finally:
         db.close()

@@ -4,10 +4,15 @@ Conflict notifications (Email + Webhook).
 Reads the collision notification recipient email address (and SMTP settings)
 from the `app_settings` SQLite table (managed directly in the Admin Panel
 at `/admin`), falling back to environment variables if unset.
+
+Includes SSRF protections blocking private/loopback/link-local SMTP targets
+and restricting SMTP ports to standard mail submission ports.
 """
+import ipaddress
 import logging
 import os
 import smtplib
+import socket
 from email.mime.text import MIMEText
 from sqlalchemy.orm import Session
 
@@ -25,6 +30,8 @@ SETTING_SMTP_PORT = "smtp_port"
 SETTING_SMTP_USER = "smtp_user"
 SETTING_SMTP_PASSWORD = "smtp_password"
 SETTING_SMTP_FROM = "smtp_from"
+
+_ALLOWED_SMTP_PORTS = (25, 465, 587, 2525)
 
 
 def _get_setting(db: Session | None, key: str, env_var: str, default: str = "") -> str:
@@ -57,6 +64,42 @@ def set_setting(db: Session, key: str, value: str) -> None:
         row.value = value.strip()
 
 
+def _validate_smtp_target(host: str, port: int) -> tuple[bool, str]:
+    """
+    SSRF guard: ensures SMTP port is a standard mail port and the resolved
+    hostname points exclusively to public internet IP addresses (blocking
+    localhost, LAN RFC1918 subnets, and link-local addresses).
+    """
+    if port not in _ALLOWED_SMTP_PORTS:
+        return False, f"SMTP port {port} is not allowed. Use one of: {', '.join(map(str, _ALLOWED_SMTP_PORTS))}."
+
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        return False, f"Could not resolve SMTP host '{host}'."
+
+    if not infos:
+        return False, f"No addresses resolved for SMTP host '{host}'."
+
+    for _, _, _, _, sockaddr in infos:
+        ip_str = sockaddr[0]
+        try:
+            ip_obj = ipaddress.ip_address(ip_str)
+        except ValueError:
+            return False, "Invalid IP address resolved for SMTP host."
+        if (
+            ip_obj.is_private
+            or ip_obj.is_loopback
+            or ip_obj.is_link_local
+            or ip_obj.is_multicast
+            or ip_obj.is_reserved
+            or ip_obj.is_unspecified
+        ):
+            return False, "Blocked: SMTP host resolves to a private or local network address."
+
+    return True, ""
+
+
 def _send_webhook(message: str) -> None:
     if not WEBHOOK_URL:
         return
@@ -87,6 +130,14 @@ def _send_email_raw(subject: str, message: str, db: Session | None = None) -> tu
 
     try:
         smtp_port = int(cfg["smtp_port"] or "587")
+    except ValueError:
+        return False, "SMTP port must be a valid number (e.g. 587)."
+
+    target_ok, target_err = _validate_smtp_target(smtp_host, smtp_port)
+    if not target_ok:
+        return False, target_err
+
+    try:
         msg = MIMEText(message)
         msg["Subject"] = subject
         msg["From"] = cfg["smtp_from"]
@@ -108,9 +159,11 @@ def _send_email_raw(subject: str, message: str, db: Session | None = None) -> tu
 
         logger.info("Sent email '%s' to %s", subject, ", ".join(recipients))
         return True, f"Email sent successfully to {', '.join(recipients)}."
+    except smtplib.SMTPAuthenticationError:
+        return False, "SMTP authentication failed. Check your username and App Password."
     except Exception as exc:
         logger.warning("Email notification failed: %s", exc)
-        return False, f"SMTP error: {exc}"
+        return False, "Could not connect to SMTP server. Verify host, port, and credentials."
 
 
 def send_test_email(db: Session) -> tuple[bool, str]:

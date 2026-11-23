@@ -43,25 +43,69 @@ if [ ! -f ./data/lab_production.db ] && [ -f ./data/lab_scheduler.db ]; then
     echo "Migrated existing bookings/credentials to ./data/lab_production.db (protected from git updates)."
 fi
 
-# Lock ./data ownership to non-root container UID 10001 (mode 700, no world-writable 777)
+# Lock ./data ownership to non-root container UID 10001 (mode 700)
 chown -R 10001:10001 ./data
 chmod 700 ./data
 if [ -f ./data/lab_production.db ]; then
     chmod 600 ./data/lab_production.db*
 fi
 
+# Lock ./tailscale/state so Tailscale's private node key is readable only by root
+chown -R 0:0 ./tailscale/state
+chmod 700 ./tailscale/state
+
 # 3. Build and update containers in-place (preserving ./data and ./tailscale/state volumes)
 echo ""
-echo "=== [1/4] Building and updating containers ==="
+echo "=== [1/5] Building and updating hardened containers ==="
 if docker compose version >/dev/null 2>&1; then
     docker compose up -d --build --remove-orphans
 else
     docker-compose up -d --build --remove-orphans
 fi
 
-# 4. Verify FastAPI app is listening on 127.0.0.1:8000 inside the shared namespace
+# 4. Isolate `br-labsched` containers from reaching private LAN / TrueNAS IPs via DOCKER-USER
 echo ""
-echo "=== [2/4] Verifying FastAPI app health on 127.0.0.1:8000 ==="
+echo "=== [2/5] Applying DOCKER-USER Local-Network Isolation Firewall ==="
+if command -v iptables >/dev/null 2>&1 && iptables -L DOCKER-USER >/dev/null 2>&1; then
+    # Remove any previous br-labsched rules so re-runs stay clean & idempotent
+    while iptables -S DOCKER-USER | grep -q -- "-i br-labsched"; do
+        RULE=$(iptables -S DOCKER-USER | grep -- "-i br-labsched" | head -n1 | sed 's/^-A /-D /')
+        # shellcheck disable=SC2086
+        iptables $RULE || break
+    done
+
+    # Insert from bottom to top at position 1 so final order is:
+    # 1. Allow ESTABLISHED/RELATED return traffic
+    # 2. Allow DNS (UDP/TCP 53) to gateway & configured nameservers
+    # 3. DROP any NEW outbound connections from br-labsched to private LAN / link-local ranges
+    for SUBNET in 169.254.0.0/16 172.16.0.0/12 10.0.0.0/8 192.168.0.0/16; do
+        iptables -I DOCKER-USER 1 -i br-labsched -d "${SUBNET}" -j DROP
+    done
+
+    # Allow DNS to default gateway and /etc/resolv.conf nameservers so Tailscale & holiday sync work
+    GW_IP=$(ip route 2>/dev/null | awk '/default/ {print $3; exit}' || true)
+    DNS_IPS=$(awk '/^nameserver/ {print $2}' /etc/resolv.conf 2>/dev/null || true)
+    for NS in ${GW_IP} ${DNS_IPS}; do
+        case "${NS}" in
+            ''|127.*) continue ;;
+        esac
+        iptables -I DOCKER-USER 1 -i br-labsched -d "${NS}" -p tcp --dport 53 -j RETURN
+        iptables -I DOCKER-USER 1 -i br-labsched -d "${NS}" -p udp --dport 53 -j RETURN
+    done
+
+    iptables -I DOCKER-USER 1 -i br-labsched -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+
+    if command -v netfilter-persistent >/dev/null 2>&1; then
+        netfilter-persistent save >/dev/null 2>&1 || true
+    fi
+    echo "DOCKER-USER isolation active: containers on br-labsched are blocked from accessing your LAN/TrueNAS."
+else
+    echo "Skipping iptables DOCKER-USER rules (iptables chain not present in this environment)."
+fi
+
+# 5. Verify FastAPI app is listening on 127.0.0.1:8000 inside the shared namespace
+echo ""
+echo "=== [3/5] Verifying FastAPI app health on 127.0.0.1:8000 ==="
 APP_OK=0
 for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
     if docker exec lab-scheduler curl -fsS http://127.0.0.1:8000/health >/dev/null 2>&1; then
@@ -78,9 +122,9 @@ if [ "$APP_OK" -ne 1 ]; then
     exit 1
 fi
 
-# 5. Authenticate Tailscale (only prompts if not already authenticated)
+# 6. Authenticate Tailscale (only prompts if not already authenticated)
 echo ""
-echo "=== [3/4] Checking Tailscale Connection ==="
+echo "=== [4/5] Checking Tailscale Connection ==="
 if ! docker exec lab-scheduler-ts tailscale status >/dev/null 2>&1; then
     echo "Open the login link below in your browser to connect:"
     docker exec -it lab-scheduler-ts tailscale up --hostname=lab-scheduler --accept-dns=false
@@ -88,14 +132,22 @@ else
     echo "Tailscale is already authenticated."
 fi
 
-# 6. Ensure Tailscale Funnel is active on port 8000 & HTTPS certificate is valid
+# 7. Ensure Tailscale Funnel is active on port 8000 & HTTPS certificate is valid
 echo ""
-echo "=== [4/4] Ensuring Public HTTPS via Tailscale Funnel ==="
+echo "=== [5/5] Ensuring Public HTTPS via Tailscale Funnel ==="
 docker exec -it lab-scheduler-ts tailscale funnel --bg 8000
 
-TS_DOMAIN=$(docker exec lab-scheduler-ts tailscale status --json | grep -o '"DNSName":[[:space:]]*"[^"]*"' | head -n1 | cut -d'"' -f4 | sed 's/\.$//')
+TS_STATUS_JSON=$(docker exec lab-scheduler-ts tailscale status --json 2>/dev/null || true)
+TS_DOMAIN=$(echo "${TS_STATUS_JSON}" | grep -o '"DNSName":[[:space:]]*"[^"]*"' | head -n1 | cut -d'"' -f4 | sed 's/\.$//')
 if [ -n "${TS_DOMAIN:-}" ]; then
     docker exec lab-scheduler-ts tailscale cert "${TS_DOMAIN}" >/dev/null 2>&1 || true
+fi
+
+if ! echo "${TS_STATUS_JSON}" | grep -q "tag:funnel-only"; then
+    echo ""
+    echo "SECURITY REMINDER: Assign tag 'tag:funnel-only' to 'lab-scheduler' in"
+    echo "https://login.tailscale.com/admin/machines (... -> Edit ACL tags)"
+    echo "so this container cannot connect to your other Tailscale devices!"
 fi
 
 echo ""

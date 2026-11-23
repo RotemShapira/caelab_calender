@@ -151,7 +151,7 @@
                 </td>
                 <td>
                     <form method="post" action="/admin/holidays/{{ h.id }}/delete" class="d-inline"
-                          onsubmit="return confirm('Delete holiday {{ h.name }} ({{ h.date.isoformat() }})?');">
+                          data-confirm="Delete holiday {{ h.name }} ({{ h.date.isoformat() }})?">
                         <input type="hidden" name="year" value="{{ selected_year }}">
                         <button type="submit" class="btn btn-sm btn-outline-danger">Delete</button>
                     </form>
