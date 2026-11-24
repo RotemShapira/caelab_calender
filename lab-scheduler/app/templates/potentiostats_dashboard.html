@@ -2,12 +2,11 @@
 {% block title %}Approved Potentiostats Schedule{% endblock %}
 {% block content %}
 <h3 class="mb-2">⚡ Approved Potentiostats Schedule</h3>
-<p class="text-muted mb-3">Dedicated schedule for Potentiostat channels only. Filter by Potentiostat or Channel Category below, and click any day to see exact scheduled hours.</p>
+<p class="text-muted mb-3">Finalized, conflict-free potentiostat channel bookings only. Filter by Potentiostat or Channel Category below, and click any date to view the hourly schedule and who booked each channel.</p>
 
 <!-- Filters Card: Potentiostat Filter + 2 Channel Category Filters -->
 <div class="card p-3 mb-4">
     <div class="row g-3">
-        <!-- Potentiostat Filter -->
         <div class="col-lg-7">
             <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">
                 <span class="fw-semibold small text-uppercase text-muted">🔍 Filter by Potentiostat</span>
@@ -30,7 +29,6 @@
             {% endif %}
         </div>
 
-        <!-- 2 Channel Categories Filter -->
         <div class="col-lg-5 border-start">
             <div class="fw-semibold small text-uppercase text-muted mb-2">⚡ Channel Category</div>
             <div class="d-flex flex-wrap gap-2">
@@ -76,79 +74,15 @@
     </div>
 </div>
 
-<!-- Clicked Day Detail & Hourly Breakdown Panel -->
+<!-- Clicked Day Hourly Schedule Panel (Hours + Who Booked per Channel) -->
 <div class="card border-primary p-3 mb-4 d-none" id="dayDetailCard">
     <div class="d-flex justify-content-between align-items-center mb-2">
         <h5 id="dayDetailTitle" class="mb-0 text-primary"></h5>
         <button type="button" class="btn btn-sm btn-outline-secondary" id="closeDayDetailBtn">&times; Close</button>
     </div>
     <div id="dayDetailEmpty" class="alert alert-light border mb-0 d-none"></div>
-    <ul class="list-group list-group-flush mb-3" id="dayDetailList"></ul>
     <div id="hourlyBreakdownContainer"></div>
 </div>
-
-<!-- Full Listing Table -->
-<h5 class="mt-4">Approved Potentiostat Bookings <span class="text-muted small fw-normal" id="listingCountLabel"></span></h5>
-{% if not bookings %}
-    <div class="alert alert-info">No approved potentiostat bookings yet.</div>
-{% else %}
-<div class="table-responsive">
-    <table class="table table-hover align-middle mb-0" id="fullListingTable">
-        <thead>
-            <tr>
-                <th>Potentiostat</th>
-                <th>Channel</th>
-                <th>Category</th>
-                <th>Booked By</th>
-                <th>Start</th>
-                <th>End</th>
-                <th>Hours</th>
-                <th>Details</th>
-                <th>Status</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for b in bookings %}
-            <tr data-pot="{{ b.potentiostat_name or b.equipment }}"
-                data-cat="{{ b.channel_category or '1' }}"
-                class="{% if b.end_date < today %}table-secondary{% elif b.start_date <= today <= b.end_date %}table-success{% endif %}">
-                <td><strong>⚡ {{ b.potentiostat_name or b.equipment }}</strong></td>
-                <td>{{ b.channel_name }}</td>
-                <td>
-                    {% set cat_key = b.channel_category or '1' %}
-                    <span class="badge {% if cat_key == '1' %}bg-primary{% else %}bg-success{% endif %}">
-                        {{ pot_cat_labels[cat_key] }}
-                    </span>
-                </td>
-                <td>{{ b.user_name }}</td>
-                <td>{{ b.start_date }}</td>
-                <td>{{ b.end_date }}</td>
-                <td>
-                    {% if b.start_time and b.end_time %}
-                        <span class="badge bg-info text-dark">{{ b.time_label }}</span>
-                    {% else %}
-                        <span class="badge bg-light text-dark border">All Day</span>
-                    {% endif %}
-                </td>
-                <td>{{ b.experiment_details or "—" }}</td>
-                <td>
-                    {% if b.end_date < today %}
-                        <span class="badge bg-secondary">Completed</span>
-                    {% elif b.start_date <= today <= b.end_date %}
-                        <span class="badge bg-success">In Progress</span>
-                    {% else %}
-                        <span class="badge bg-primary">Upcoming</span>
-                    {% endif %}
-                </td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-</div>
-<div class="alert alert-secondary mt-2 d-none" id="noMatchingListingAlert">
-    No approved potentiostat bookings match the active filter.
-</div>
-{% endif %}
 
 <script>
 const ALL_POT_BOOKINGS = {{ bookings_json | tojson }};
@@ -227,7 +161,7 @@ function buildDayMap(bookings) {
     return map;
 }
 
-function updateFilterStatusAndTable() {
+function updateFilterStatus() {
     const pots = getSelectedPots();
     const cats = getSelectedCats();
     const statusEl = document.getElementById("filterStatusText");
@@ -235,22 +169,6 @@ function updateFilterStatusAndTable() {
         const potCount = document.querySelectorAll(".pot-filter-cb").length;
         const potText = pots === null ? "all potentiostats" : `${pots.size}/${potCount} potentiostat(s)`;
         statusEl.textContent = `Showing ${potText} across ${cats.size}/2 channel categories.`;
-    }
-
-    const table = document.getElementById("fullListingTable");
-    const noMatchAlert = document.getElementById("noMatchingListingAlert");
-    const countLabel = document.getElementById("listingCountLabel");
-    if (table) {
-        let visibleCount = 0;
-        table.querySelectorAll("tbody tr").forEach(tr => {
-            const p = tr.getAttribute("data-pot");
-            const c = tr.getAttribute("data-cat");
-            const show = ((pots === null) || pots.has(p)) && cats.has(c);
-            tr.classList.toggle("d-none", !show);
-            if (show) visibleCount++;
-        });
-        if (noMatchAlert) noMatchAlert.classList.toggle("d-none", visibleCount > 0);
-        if (countLabel) countLabel.textContent = `(${visibleCount} shown)`;
     }
 }
 
@@ -268,7 +186,7 @@ async function ensureHolidaysLoaded(year) {
 function renderCalendar() {
     const filtered = getFilteredBookings();
     currentDayMap = buildDayMap(filtered);
-    updateFilterStatusAndTable();
+    updateFilterStatus();
 
     document.getElementById("calendarMonthLabel").textContent =
         MONTH_NAMES[viewMonth] + " " + viewYear;
@@ -326,7 +244,7 @@ function renderCalendar() {
                 dayBookings.map(b => `${b.equipment} [${b.category_label}] (${b.time_label}) — ${b.user_name}`).join(", ")
             );
         } else {
-            tooltipParts.push("Click to view day availability");
+            tooltipParts.push("Click to view hourly availability");
         }
         cell.title = tooltipParts.join(" | ");
 
@@ -358,110 +276,100 @@ function showDayDetail(dateKey, bookings, holidayName, shouldScroll) {
     const card = document.getElementById("dayDetailCard");
     const title = document.getElementById("dayDetailTitle");
     const emptyBox = document.getElementById("dayDetailEmpty");
-    const list = document.getElementById("dayDetailList");
     const hourlyBox = document.getElementById("hourlyBreakdownContainer");
 
-    title.textContent = "⚡ Potentiostat Channels Schedule for " + dateKey + (holidayName ? " (" + holidayName + ")" : "");
-    list.innerHTML = "";
+    title.textContent = "⚡ Hourly Potentiostat Schedule for " + dateKey + (holidayName ? " (" + holidayName + ")" : "");
     hourlyBox.innerHTML = "";
 
     if (!bookings.length) {
         emptyBox.textContent = `No potentiostat channel bookings on ${dateKey} for the active filter — all channels are free.`;
         emptyBox.classList.remove("d-none");
-        list.classList.add("d-none");
         card.classList.remove("d-none");
         if (shouldScroll) card.scrollIntoView({ behavior: "smooth", block: "nearest" });
         return;
     }
 
     emptyBox.classList.add("d-none");
-    list.classList.remove("d-none");
 
-    for (const b of bookings) {
-        const li = document.createElement("li");
-        li.className = "list-group-item px-0";
-
-        const devStrong = document.createElement("strong");
-        devStrong.textContent = `⚡ ${b.equipment}`;
-        li.appendChild(devStrong);
-
-        const catBadge = document.createElement("span");
-        catBadge.className = b.channel_category === "1" ? "badge bg-primary ms-2" : "badge bg-success ms-2";
-        catBadge.textContent = b.category_label;
-        li.appendChild(catBadge);
-
-        const timeBadge = document.createElement("span");
-        timeBadge.className = (b.start_time && b.end_time) ? "badge bg-info text-dark ms-2" : "badge bg-secondary ms-2";
-        timeBadge.textContent = b.time_label;
-        li.appendChild(timeBadge);
-
-        const userSpan = document.createElement("span");
-        userSpan.className = "ms-2";
-        userSpan.textContent = `— ${b.user_name}` + (b.experiment_details ? ` (${b.experiment_details})` : "");
-        li.appendChild(userSpan);
-
-        list.appendChild(li);
-    }
-
+    // Group bookings by Potentiostat — Channel (columns) with Hours 00:00 - 23:00 as rows showing who booked
     const byChannel = {};
+    const channelMeta = {};
     for (const b of bookings) {
-        const label = `${b.equipment} (${b.category_label})`;
-        if (!byChannel[label]) byChannel[label] = [];
-        byChannel[label].push(b);
+        const key = b.equipment;
+        if (!byChannel[key]) {
+            byChannel[key] = [];
+            channelMeta[key] = {
+                cat: b.channel_category,
+                catLabel: b.category_label,
+            };
+        }
+        byChannel[key].push(b);
     }
-
-    const heading = document.createElement("div");
-    heading.className = "small fw-semibold text-muted mb-2";
-    heading.textContent = "Hourly Breakdown (00:00 – 23:00 — green cells are scheduled, white cells are free):";
-    hourlyBox.appendChild(heading);
+    const channels = Object.keys(byChannel).sort((a, b) => a.localeCompare(b));
 
     const tableWrap = document.createElement("div");
-    tableWrap.className = "table-responsive";
+    tableWrap.className = "table-responsive border rounded";
+    tableWrap.style.maxHeight = "520px";
+    tableWrap.style.overflowY = "auto";
+
     const tbl = document.createElement("table");
-    tbl.className = "table table-sm table-bordered text-center mb-0";
-    tbl.style.fontSize = "0.75rem";
+    tbl.className = "table table-sm table-bordered text-center align-middle mb-0";
+    tbl.style.fontSize = "0.82rem";
 
     const thead = document.createElement("thead");
+    thead.className = "table-light sticky-top";
     const headRow = document.createElement("tr");
-    const devTh = document.createElement("th");
-    devTh.textContent = "Potentiostat — Channel";
-    devTh.className = "text-start";
-    headRow.appendChild(devTh);
-    for (let h = 0; h < 24; h++) {
+    const hourTh = document.createElement("th");
+    hourTh.textContent = "Hour";
+    hourTh.style.width = "110px";
+    headRow.appendChild(hourTh);
+
+    for (const chKey of channels) {
         const th = document.createElement("th");
-        th.textContent = `${pad(h)}:00`;
-        th.style.minWidth = "40px";
+        th.style.minWidth = "155px";
+        const nameDiv = document.createElement("div");
+        nameDiv.textContent = chKey;
+        const badge = document.createElement("span");
+        badge.className = channelMeta[chKey].cat === "1"
+            ? "badge bg-primary fw-normal mt-1"
+            : "badge bg-success fw-normal mt-1";
+        badge.textContent = channelMeta[chKey].catLabel;
+        th.appendChild(nameDiv);
+        th.appendChild(badge);
         headRow.appendChild(th);
     }
     thead.appendChild(headRow);
     tbl.appendChild(thead);
 
     const tbody = document.createElement("tbody");
-    for (const [chLabel, chBookings] of Object.entries(byChannel)) {
+    for (let h = 0; h < 24; h++) {
+        const slotStart = h * 60;
+        const slotEnd = (h + 1) * 60;
         const tr = document.createElement("tr");
-        const nameTd = document.createElement("td");
-        nameTd.className = "text-start fw-semibold text-nowrap";
-        nameTd.textContent = chLabel;
-        tr.appendChild(nameTd);
 
-        for (let h = 0; h < 24; h++) {
-            const slotStart = h * 60;
-            const slotEnd = (h + 1) * 60;
-            const matching = chBookings.filter(b => bookingCoversDayHour(b, dateKey, slotStart, slotEnd));
+        const hourTd = document.createElement("td");
+        hourTd.className = "fw-semibold text-muted bg-light text-nowrap";
+        hourTd.textContent = `${pad(h)}:00 – ${pad(h + 1)}:00`;
+        tr.appendChild(hourTd);
+
+        for (const chKey of channels) {
+            const matching = byChannel[chKey].filter(b => bookingCoversDayHour(b, dateKey, slotStart, slotEnd));
             const td = document.createElement("td");
             if (matching.length > 0) {
-                td.style.backgroundColor = "#28a745";
+                td.style.backgroundColor = "#198754";
                 td.style.color = "#fff";
-                td.textContent = "✓";
-                td.title = matching.map(b => `${b.user_name} (${b.time_label})`).join(", ");
+                td.className = "fw-semibold";
+                const names = [...new Set(matching.map(b => b.user_name))];
+                td.textContent = names.join(", ");
             } else {
-                td.style.backgroundColor = "#f8f9fa";
-                td.title = `${pad(h)}:00–${pad(h + 1)}:00 Free`;
+                td.style.backgroundColor = "#ffffff";
+                td.textContent = "";
             }
             tr.appendChild(td);
         }
         tbody.appendChild(tr);
     }
+
     tbl.appendChild(tbody);
     tableWrap.appendChild(tbl);
     hourlyBox.appendChild(tableWrap);

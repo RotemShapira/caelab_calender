@@ -2,7 +2,7 @@
 {% block title %}Approved Devices Schedule{% endblock %}
 {% block content %}
 <h3 class="mb-2">📅 Approved Devices Schedule</h3>
-<p class="text-muted mb-3">Finalized, conflict-free bookings only. Filter by machine below and click any day on the calendar to inspect its exact scheduled hours.</p>
+<p class="text-muted mb-3">Finalized, conflict-free bookings only. Filter by machine below and click any date to view the hourly schedule and who booked each hour.</p>
 
 <!-- Machine / Device Filter Bar -->
 {% if filter_devices %}
@@ -54,73 +54,19 @@
     </div>
 </div>
 
-<!-- Clicked Day Detail & Hourly Breakdown Panel -->
+<!-- Clicked Day Hourly Schedule Panel (Hours + Who Booked) -->
 <div class="card border-primary p-3 mb-4 d-none" id="dayDetailCard">
     <div class="d-flex justify-content-between align-items-center mb-2">
         <h5 id="dayDetailTitle" class="mb-0 text-primary"></h5>
         <button type="button" class="btn btn-sm btn-outline-secondary" id="closeDayDetailBtn">&times; Close</button>
     </div>
     <div id="dayDetailEmpty" class="alert alert-light border mb-0 d-none"></div>
-    <ul class="list-group list-group-flush mb-3" id="dayDetailList"></ul>
     <div id="hourlyBreakdownContainer"></div>
 </div>
 
-<!-- Full Listing Table (also synced to Machine Filter) -->
-<h5 class="mt-4">Full Listing <span class="text-muted small fw-normal" id="listingCountLabel"></span></h5>
-{% if not bookings %}
-    <div class="alert alert-info">No approved bookings yet.</div>
-{% else %}
-<div class="table-responsive">
-    <table class="table table-hover align-middle mb-0" id="fullListingTable">
-        <thead>
-            <tr>
-                <th>Device</th>
-                <th>Booked By</th>
-                <th>Start</th>
-                <th>End</th>
-                <th>Hours</th>
-                <th>Details</th>
-                <th>Status</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for b in bookings %}
-            <tr data-device="{{ b.equipment }}"
-                class="{% if b.end_date < today %}table-secondary{% elif b.start_date <= today <= b.end_date %}table-success{% endif %}">
-                <td><strong>{{ b.equipment }}</strong></td>
-                <td>{{ b.user_name }}</td>
-                <td>{{ b.start_date }}</td>
-                <td>{{ b.end_date }}</td>
-                <td>
-                    {% if b.start_time and b.end_time %}
-                        <span class="badge bg-info text-dark">{{ b.time_label }}</span>
-                    {% else %}
-                        <span class="badge bg-light text-dark border">All Day</span>
-                    {% endif %}
-                </td>
-                <td>{{ b.experiment_details or "—" }}</td>
-                <td>
-                    {% if b.end_date < today %}
-                        <span class="badge bg-secondary">Completed</span>
-                    {% elif b.start_date <= today <= b.end_date %}
-                        <span class="badge bg-success">In Progress</span>
-                    {% else %}
-                        <span class="badge bg-primary">Upcoming</span>
-                    {% endif %}
-                </td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-</div>
-<div class="alert alert-secondary mt-2 d-none" id="noMatchingListingAlert">
-    No approved bookings match the currently selected machine filter.
-</div>
-{% endif %}
-
 <script>
 const ALL_APPROVED_BOOKINGS = {{ bookings_json | tojson }};
-const HOLIDAYS_CACHE = {}; // year -> {"YYYY-MM-DD": "Holiday Name"}
+const HOLIDAYS_CACHE = {};
 
 const MONTH_NAMES = ["January","February","March","April","May","June",
                       "July","August","September","October","November","December"];
@@ -158,7 +104,7 @@ function bookingCoversDayHour(b, dateKey, slotStart, slotEnd) {
 
 function getSelectedDevices() {
     const checkboxes = document.querySelectorAll(".device-filter-cb");
-    if (!checkboxes.length) return null; // no filter bar rendered
+    if (!checkboxes.length) return null;
     const selected = new Set();
     checkboxes.forEach(cb => {
         if (cb.checked) selected.add(cb.value);
@@ -178,10 +124,7 @@ function buildDayMap(bookings) {
         let cur = new Date(b.start_date + "T00:00:00");
         const end = new Date(b.end_date + "T00:00:00");
         while (cur <= end) {
-            const year = cur.getFullYear();
-            const month = String(cur.getMonth() + 1).padStart(2, '0');
-            const day = String(cur.getDate()).padStart(2, '0');
-            const key = `${year}-${month}-${day}`;
+            const key = `${cur.getFullYear()}-${pad(cur.getMonth() + 1)}-${pad(cur.getDate())}`;
             if (!map[key]) map[key] = [];
             map[key].push(b);
             cur.setDate(cur.getDate() + 1);
@@ -190,7 +133,7 @@ function buildDayMap(bookings) {
     return map;
 }
 
-function updateFilterStatusAndTable() {
+function updateFilterStatus() {
     const checkboxes = document.querySelectorAll(".device-filter-cb");
     const selected = getSelectedDevices();
     const statusEl = document.getElementById("filterStatusText");
@@ -202,27 +145,6 @@ function updateFilterStatusAndTable() {
             statusEl.textContent = "No machines selected — select one or more machines above to view their schedule.";
         } else {
             statusEl.textContent = `Showing ${selected.size} of ${checkboxes.length} machine(s): ${Array.from(selected).join(", ")}.`;
-        }
-    }
-
-    const table = document.getElementById("fullListingTable");
-    const noMatchAlert = document.getElementById("noMatchingListingAlert");
-    const countLabel = document.getElementById("listingCountLabel");
-
-    if (table) {
-        const rows = table.querySelectorAll("tbody tr");
-        let visibleCount = 0;
-        rows.forEach(tr => {
-            const dev = tr.getAttribute("data-device");
-            const show = (selected === null) || selected.has(dev);
-            tr.classList.toggle("d-none", !show);
-            if (show) visibleCount++;
-        });
-        if (noMatchAlert) {
-            noMatchAlert.classList.toggle("d-none", visibleCount > 0);
-        }
-        if (countLabel) {
-            countLabel.textContent = `(${visibleCount} shown)`;
         }
     }
 }
@@ -241,7 +163,7 @@ async function ensureHolidaysLoaded(year) {
 function renderCalendar() {
     const filteredBookings = getFilteredBookings();
     currentDayMap = buildDayMap(filteredBookings);
-    updateFilterStatusAndTable();
+    updateFilterStatus();
 
     document.getElementById("calendarMonthLabel").textContent =
         MONTH_NAMES[viewMonth] + " " + viewYear;
@@ -259,7 +181,7 @@ function renderCalendar() {
     }
 
     for (let day = 1; day <= daysInMonth; day++) {
-        const key = viewYear + "-" + pad(viewMonth + 1) + "-" + pad(day);
+        const key = `${viewYear}-${pad(viewMonth + 1)}-${pad(day)}`;
         const cell = document.createElement("td");
 
         const weekday = new Date(viewYear, viewMonth, day).getDay();
@@ -300,7 +222,7 @@ function renderCalendar() {
                 dayBookings.map(b => `${b.equipment} (${b.time_label}) — ${b.user_name}`).join(", ")
             );
         } else {
-            tooltipParts.push("Click to view day availability");
+            tooltipParts.push("Click to view hourly availability");
         }
         cell.title = tooltipParts.join(" | ");
 
@@ -322,7 +244,6 @@ function renderCalendar() {
         body.appendChild(row);
     }
 
-    // If a day detail panel is currently open, refresh it to match the active filter
     if (selectedDateKey && !document.getElementById("dayDetailCard").classList.contains("d-none")) {
         const yr = parseInt(selectedDateKey.slice(0, 4), 10);
         const hName = (HOLIDAYS_CACHE[yr] || {})[selectedDateKey];
@@ -334,110 +255,84 @@ function showDayDetail(dateKey, bookings, holidayName, shouldScroll) {
     const card = document.getElementById("dayDetailCard");
     const title = document.getElementById("dayDetailTitle");
     const emptyBox = document.getElementById("dayDetailEmpty");
-    const list = document.getElementById("dayDetailList");
     const hourlyBox = document.getElementById("hourlyBreakdownContainer");
 
-    title.textContent = "🕒 Scheduled Hours for " + dateKey + (holidayName ? " (" + holidayName + ")" : "");
-    list.innerHTML = "";
+    title.textContent = "🕒 Hourly Schedule for " + dateKey + (holidayName ? " (" + holidayName + ")" : "");
     hourlyBox.innerHTML = "";
 
     if (!bookings.length) {
         emptyBox.textContent = `No bookings on ${dateKey} for the currently selected machine(s) — all hours are free.`;
         emptyBox.classList.remove("d-none");
-        list.classList.add("d-none");
         card.classList.remove("d-none");
         if (shouldScroll) card.scrollIntoView({ behavior: "smooth", block: "nearest" });
         return;
     }
 
     emptyBox.classList.add("d-none");
-    list.classList.remove("d-none");
 
-    for (const b of bookings) {
-        const li = document.createElement("li");
-        li.className = "list-group-item px-0 d-flex justify-content-between align-items-center flex-wrap gap-2";
-
-        const left = document.createElement("div");
-        const devStrong = document.createElement("strong");
-        devStrong.textContent = b.equipment;
-        left.appendChild(devStrong);
-
-        const timeBadge = document.createElement("span");
-        timeBadge.className = (b.start_time && b.end_time)
-            ? "badge bg-info text-dark ms-2"
-            : "badge bg-success ms-2";
-        timeBadge.textContent = b.time_label;
-        left.appendChild(timeBadge);
-
-        const userSpan = document.createElement("span");
-        userSpan.className = "ms-2";
-        userSpan.textContent = `— ${b.user_name}` + (b.experiment_details ? ` (${b.experiment_details})` : "");
-        left.appendChild(userSpan);
-
-        li.appendChild(left);
-        list.appendChild(li);
-    }
-
-    // Group bookings by device and render a 24-hour slot grid (00:00 - 23:00)
+    // Group bookings by machine (columns) with Hours 00:00 - 23:00 as rows showing who booked each hour
     const byDevice = {};
     for (const b of bookings) {
         if (!byDevice[b.equipment]) byDevice[b.equipment] = [];
         byDevice[b.equipment].push(b);
     }
-
-    const heading = document.createElement("div");
-    heading.className = "small fw-semibold text-muted mb-2";
-    heading.textContent = "Hourly Breakdown (00:00 – 23:00 — green cells are scheduled, white cells are free):";
-    hourlyBox.appendChild(heading);
+    const devices = Object.keys(byDevice).sort((a, b) => a.localeCompare(b));
 
     const tableWrap = document.createElement("div");
-    tableWrap.className = "table-responsive";
+    tableWrap.className = "table-responsive border rounded";
+    tableWrap.style.maxHeight = "520px";
+    tableWrap.style.overflowY = "auto";
+
     const tbl = document.createElement("table");
-    tbl.className = "table table-sm table-bordered text-center mb-0";
-    tbl.style.fontSize = "0.75rem";
+    tbl.className = "table table-sm table-bordered text-center align-middle mb-0";
+    tbl.style.fontSize = "0.82rem";
 
     const thead = document.createElement("thead");
+    thead.className = "table-light sticky-top";
     const headRow = document.createElement("tr");
-    const devTh = document.createElement("th");
-    devTh.textContent = "Machine";
-    devTh.className = "text-start";
-    headRow.appendChild(devTh);
-    for (let h = 0; h < 24; h++) {
+    const hourTh = document.createElement("th");
+    hourTh.textContent = "Hour";
+    hourTh.style.width = "110px";
+    headRow.appendChild(hourTh);
+
+    for (const dev of devices) {
         const th = document.createElement("th");
-        th.textContent = `${pad(h)}:00`;
-        th.style.minWidth = "40px";
+        th.textContent = dev;
+        th.style.minWidth = "140px";
         headRow.appendChild(th);
     }
     thead.appendChild(headRow);
     tbl.appendChild(thead);
 
     const tbody = document.createElement("tbody");
-    for (const [device, devBookings] of Object.entries(byDevice)) {
+    for (let h = 0; h < 24; h++) {
+        const slotStart = h * 60;
+        const slotEnd = (h + 1) * 60;
         const tr = document.createElement("tr");
-        const nameTd = document.createElement("td");
-        nameTd.className = "text-start fw-semibold text-nowrap";
-        nameTd.textContent = device;
-        tr.appendChild(nameTd);
 
-        for (let h = 0; h < 24; h++) {
-            const slotStart = h * 60;
-            const slotEnd = (h + 1) * 60;
-            const matching = devBookings.filter(b => bookingCoversDayHour(b, dateKey, slotStart, slotEnd));
+        const hourTd = document.createElement("td");
+        hourTd.className = "fw-semibold text-muted bg-light text-nowrap";
+        hourTd.textContent = `${pad(h)}:00 – ${pad(h + 1)}:00`;
+        tr.appendChild(hourTd);
+
+        for (const dev of devices) {
+            const matching = byDevice[dev].filter(b => bookingCoversDayHour(b, dateKey, slotStart, slotEnd));
             const td = document.createElement("td");
             if (matching.length > 0) {
-                td.style.backgroundColor = "#28a745";
+                td.style.backgroundColor = "#198754";
                 td.style.color = "#fff";
-                td.textContent = "✓";
-                td.title = matching.map(b => `${b.user_name} (${b.time_label})`).join(", ");
+                td.className = "fw-semibold";
+                const names = [...new Set(matching.map(b => b.user_name))];
+                td.textContent = names.join(", ");
             } else {
-                td.style.backgroundColor = "#f8f9fa";
+                td.style.backgroundColor = "#ffffff";
                 td.textContent = "";
-                td.title = `${pad(h)}:00–${pad(h + 1)}:00 Free`;
             }
             tr.appendChild(td);
         }
         tbody.appendChild(tr);
     }
+
     tbl.appendChild(tbody);
     tableWrap.appendChild(tbl);
     hourlyBox.appendChild(tableWrap);

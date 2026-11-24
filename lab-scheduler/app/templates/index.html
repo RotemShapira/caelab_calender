@@ -433,8 +433,14 @@ async function loadBookingsAndRenderCalendar() {
     updateConflictBanner();
 }
 
+function shortChannelName(eq) {
+    const idx = eq.indexOf(" — ");
+    return idx >= 0 ? eq.slice(idx + 3) : eq;
+}
+
 function renderMonthCalendar() {
     const currentUser = userNameSelect.value || "";
+    const isMultiChannel = getSelectedEquipmentNames().length > 1;
     calendarMonthLabel.textContent = `${MONTH_NAMES[viewMonth]} ${viewYear}`;
 
     const firstDay = new Date(viewYear, viewMonth, 1);
@@ -451,7 +457,7 @@ function renderMonthCalendar() {
         const iso = `${viewYear}-${pad(viewMonth + 1)}-${pad(day)}`;
         const cell = document.createElement("td");
         cell.style.cursor = "pointer";
-        cell.style.height = "46px";
+        cell.style.height = "52px";
 
         const weekday = new Date(viewYear, viewMonth, day).getDay();
         const isWeekend = (weekday === 5 || weekday === 6);
@@ -494,13 +500,32 @@ function renderMonthCalendar() {
             cell.style.fontWeight = "bold";
         }
 
-        cell.textContent = `${day}${suffix}`;
-
         const dayBookings = activeBookings.filter(b => bookingCoversSlot(b, iso, 0, 1440));
+        const dayNumDiv = document.createElement("div");
+        dayNumDiv.textContent = `${day}${suffix}`;
+        cell.appendChild(dayNumDiv);
+
+        if (isMultiChannel && dayBookings.length) {
+            const bookedChannels = [...new Set(dayBookings.map(b => shortChannelName(b.equipment)))];
+            const chDiv = document.createElement("div");
+            chDiv.className = "text-truncate";
+            chDiv.style.fontSize = "0.68rem";
+            chDiv.style.maxWidth = "95px";
+            chDiv.style.margin = "0 auto";
+            chDiv.textContent = bookedChannels.join(", ");
+            cell.appendChild(chDiv);
+        }
+
         const tips = [];
         if (holidayName) tips.push(holidayName);
         if (dayBookings.length) {
-            tips.push(dayBookings.map(b => `${b.user_name} (${b.time_label})`).join(", "));
+            tips.push(
+                dayBookings.map(b =>
+                    isMultiChannel
+                        ? `[${shortChannelName(b.equipment)}] ${b.user_name} (${b.time_label})`
+                        : `${b.user_name} (${b.time_label})`
+                ).join(", ")
+            );
         } else {
             tips.push("Available all day — click to pick hours");
         }
@@ -526,6 +551,7 @@ function renderMonthCalendar() {
 
 function renderDayHourlyView(dateISO, shouldScroll) {
     const currentUser = userNameSelect.value || "";
+    const isMultiChannel = getSelectedEquipmentNames().length > 1;
     const yr = parseInt(dateISO.slice(0, 4), 10);
     const holName = (HOLIDAYS_CACHE[yr] || {})[dateISO] || "";
 
@@ -546,41 +572,50 @@ function renderDayHourlyView(dateISO, shouldScroll) {
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "btn btn-sm w-100 text-start border py-2 px-2";
-        btn.style.minHeight = "56px";
+        btn.style.minHeight = isMultiChannel ? "66px" : "56px";
 
-        let statusText = "Available";
+        const timeDiv = document.createElement("div");
+        timeDiv.className = "fw-bold small";
+        timeDiv.textContent = `${pad(h)}:00 – ${pad(h + 1)}:00`;
+        btn.appendChild(timeDiv);
+
+        const formatBookingTag = (b) => {
+            const who = b.user_name === currentUser ? "Yours" : b.user_name;
+            return isMultiChannel ? `${shortChannelName(b.equipment)}: ${who}` : who;
+        };
+
+        const subDiv = document.createElement("div");
+        subDiv.style.fontSize = "0.72rem";
+        subDiv.style.lineHeight = "1.2";
+
         if (isSelected) {
             btn.style.backgroundColor = "#0d6efd";
             btn.style.color = "#fff";
             if (hasOthers) {
                 btn.style.boxShadow = "inset 0 0 0 2px #dc3545";
-                statusText = "⚠️ Selected (Overlap)";
+                const overlapTags = [...new Set(matching.filter(b => b.user_name !== currentUser).map(formatBookingTag))];
+                subDiv.textContent = isMultiChannel
+                    ? `⚠️ Overlap (${overlapTags.join(", ")})`
+                    : "⚠️ Selected (Overlap)";
             } else {
-                statusText = "✓ Selected";
+                subDiv.textContent = "✓ Selected";
             }
         } else if (hasOthers) {
             btn.style.backgroundColor = "#dc3545";
             btn.style.color = "#fff";
-            statusText = [...new Set(matching.map(b => b.user_name))].join(", ");
+            const tags = [...new Set(matching.map(formatBookingTag))];
+            subDiv.textContent = tags.join(", ");
         } else if (hasMine) {
             btn.style.backgroundColor = "#198754";
             btn.style.color = "#fff";
-            statusText = "Yours";
+            const tags = [...new Set(matching.map(formatBookingTag))];
+            subDiv.textContent = tags.join(", ");
         } else {
             btn.style.backgroundColor = "#ffffff";
             btn.style.color = "#212529";
+            subDiv.textContent = "Available";
         }
 
-        const timeDiv = document.createElement("div");
-        timeDiv.className = "fw-bold small";
-        timeDiv.textContent = `${pad(h)}:00 – ${pad(h + 1)}:00`;
-
-        const subDiv = document.createElement("div");
-        subDiv.className = "text-truncate";
-        subDiv.style.fontSize = "0.72rem";
-        subDiv.textContent = statusText;
-
-        btn.appendChild(timeDiv);
         btn.appendChild(subDiv);
 
         if (matching.length) {
