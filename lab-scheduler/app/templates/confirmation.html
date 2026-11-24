@@ -6,9 +6,10 @@
         <div class="card p-4">
             {% for item in results %}
                 {% set b = item.booking %}
-                {% if item.has_conflict %}
+                {% if item.has_conflict or item.exceeds_pot_limit %}
                     <div class="alert alert-warning">
-                        <h5 class="alert-heading">⚠️ Conflict Detected — {{ b.equipment }}</h5>
+                        {% if item.has_conflict %}
+                        <h5 class="alert-heading">⚠️ Schedule Conflict Detected — {{ b.equipment }}</h5>
                         <p>Your request for <strong>{{ b.equipment }}</strong>
                            ({{ b.start_date }} to {{ b.end_date }}, <strong>{{ b.time_label }}</strong>) overlaps with
                            {{ item.conflicts|length }} existing request(s):</p>
@@ -17,12 +18,24 @@
                             <li>{{ c.user_name }} — {{ c.start_date }} to {{ c.end_date }} ({{ c.time_label }}, status: {{ c.status }})</li>
                             {% endfor %}
                         </ul>
-                        <p class="mb-0">The lab admin has been notified and will resolve the conflict. Saved as <strong>pending</strong>.</p>
+                        {% endif %}
+
+                        {% if item.exceeds_pot_limit %}
+                        <h5 class="alert-heading">⚠️ Potentiostat 3-Channel Limit Exceeded — {{ b.equipment }}</h5>
+                        <p>A single user is limited to <strong>3 potentiostat channels</strong> at any given time. You already have overlapping potentiostat channel bookings during this period:</p>
+                        <ul class="mb-2">
+                            {% for ob in item.user_pot_overlaps %}
+                            <li>#{{ ob.id }} {{ ob.equipment }} — {{ ob.start_date }} to {{ ob.end_date }} ({{ ob.time_label }}, status: {{ ob.status }})</li>
+                            {% endfor %}
+                        </ul>
+                        {% endif %}
+
+                        <p class="mb-0">The lab manager / admin has been notified and will review your request. Saved as <strong>pending</strong>.</p>
                     </div>
                 {% else %}
                     <div class="alert alert-success">
                         <h5 class="alert-heading">✅ Request Approved — {{ b.equipment }}</h5>
-                        <p class="mb-0">No conflicts found. Your booking has been <strong>approved</strong> automatically and now appears on the schedule.</p>
+                        <p class="mb-0">No conflicts found. Your booking has been <strong>approved</strong> automatically and now appears on the approved schedule.</p>
                     </div>
                 {% endif %}
             {% endfor %}
@@ -47,9 +60,9 @@
             <div class="d-flex gap-2 mt-3">
                 <a href="/" class="btn btn-outline-secondary">Submit Another Request</a>
                 {% if is_potentiostat_booking %}
-                <a href="/potentiostats" class="btn btn-outline-primary">⚡ View Potentiostats Schedule</a>
+                <a href="/potentiostats" class="btn btn-outline-primary">⚡ View Approved Potentiostats Schedule</a>
                 {% else %}
-                <a href="/dashboard" class="btn btn-outline-primary">View Devices Schedule</a>
+                <a href="/dashboard" class="btn btn-outline-primary">View Approved Devices Schedule</a>
                 {% endif %}
             </div>
         </div>

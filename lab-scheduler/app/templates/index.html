@@ -21,10 +21,8 @@
             {% endif %}
 
             <form method="post" action="/bookings" id="bookingForm">
-                <!-- Hidden canonical equipment_selection field submitted to POST /bookings -->
                 <input type="hidden" name="equipment_selection" id="equipmentSelectionInput"
                        value="{{ form_data.equipment_selection or '' }}">
-                <!-- Always send use_hours=1 when hourly times are chosen (cleared if All Day is clicked) -->
                 <input type="hidden" name="use_hours" id="useHoursInput"
                        value="{% if form_data.start_time or not form_data %}1{% else %}{% endif %}">
 
@@ -62,7 +60,9 @@
                     <select class="form-select" id="generalDeviceSelect">
                         <option value="" selected>— Choose a lab device —</option>
                         {% for d in devices %}
-                        <option value="{{ d.name }}">{{ d.name }}</option>
+                        <option value="{{ d.name }}">
+                            {{ d.name }}{% if d.status == 'service' %} — 🔧 [Down for Service]{% elif d.status == 'broken' %} — ❌ [Broken]{% endif %}
+                        </option>
                         {% endfor %}
                     </select>
                 </div>
@@ -73,7 +73,9 @@
                     <select class="form-select mb-3" id="potentiostatSelect">
                         <option value="" selected>— Choose a potentiostat —</option>
                         {% for p in potentiostats %}
-                        <option value="{{ p.id }}">⚡ {{ p.name }}</option>
+                        <option value="{{ p.id }}">
+                            ⚡ {{ p.name }}{% if p.status == 'service' %} — 🔧 [Down for Service]{% elif p.status == 'broken' %} — ❌ [Broken]{% endif %}
+                        </option>
                         {% endfor %}
                     </select>
 
@@ -96,52 +98,74 @@
                                 </div>
                             </div>
                         </div>
-                        <div class="form-text mt-2">Select one or more channels to open their live hourly availability calendar below.</div>
+                        <div class="form-text mt-2">
+                            Select one or more channels to open the monthly calendar below.
+                            <span class="text-muted">(Note: Each user is limited to 3 concurrent potentiostat channels; requesting a 4th+ sends it to the Lab Manager for approval.)</span>
+                        </div>
                     </div>
                 </div>
 
-                <!-- Step 3: Interactive Weekly Hourly Availability Calendar -->
-                <div id="hourlyCalendarSection" class="mb-4 d-none">
-                    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">
-                        <div>
-                            <h5 class="mb-0" id="calActiveTargetTitle">📅 Hourly Availability Calendar</h5>
-                            <div class="small text-muted">Click any starting hour slot below to begin your booking.</div>
-                        </div>
-                        <div class="d-flex align-items-center flex-wrap gap-2">
-                            <button type="button" class="btn btn-outline-secondary btn-sm" id="prevWeekBtn">&laquo; Prev Week</button>
-                            <button type="button" class="btn btn-outline-secondary btn-sm" id="thisWeekBtn">Today</button>
-                            <button type="button" class="btn btn-outline-secondary btn-sm" id="nextWeekBtn">Next Week &raquo;</button>
-                            <input type="date" class="form-control form-control-sm" id="jumpDateInput"
-                                   style="width: 145px;" title="Jump calendar to date">
-                        </div>
-                    </div>
+                <!-- Equipment / Channel Service / Broken Status Warning -->
+                <div id="equipStatusBanner" class="alert d-none mb-3"></div>
 
-                    <!-- Color Legend -->
-                    <div class="mb-2 small d-flex flex-wrap gap-3 align-items-center">
-                        <span><span class="badge bg-white text-dark border">&nbsp;&nbsp;</span> Available</span>
-                        <span><span class="badge" style="background-color:#dc3545;">&nbsp;&nbsp;</span> Booked (other user — clicking sends to Manager for approval)</span>
-                        <span><span class="badge" style="background-color:#198754;">&nbsp;&nbsp;</span> Your existing booking</span>
-                        <span><span class="badge" style="background-color:#0d6efd;">&nbsp;&nbsp;</span> Your new selection</span>
-                    </div>
+                <!-- Step 3: Monthly Availability Calendar (opens once device or potentiostat+channel is chosen) -->
+                <div id="monthlyCalendarSection" class="mb-4 d-none">
+                    <div class="card p-3 border">
+                        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+                            <div>
+                                <h5 class="mb-0" id="calActiveTargetTitle">📅 Monthly Availability Calendar</h5>
+                                <div class="small text-muted">Click any date below to open its 24-hour hourly view and choose your starting hour.</div>
+                            </div>
+                            <div class="d-flex align-items-center gap-2">
+                                <button type="button" class="btn btn-outline-secondary btn-sm" id="prevMonthBtn">&laquo; Prev</button>
+                                <strong id="calendarMonthLabel" class="px-2"></strong>
+                                <button type="button" class="btn btn-outline-secondary btn-sm" id="nextMonthBtn">Next &raquo;</button>
+                            </div>
+                        </div>
 
-                    <div class="table-responsive border rounded" style="max-height: 520px; overflow-y: auto;">
-                        <table class="table table-bordered table-sm text-center align-middle mb-0" id="weekHourlyTable" style="font-size: 0.8rem;">
-                            <thead class="table-light sticky-top" style="z-index: 2;">
-                                <tr id="weekHeaderRow"></tr>
+                        <table class="table table-bordered text-center align-middle mb-0" id="bookingMonthTable">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Sun</th><th>Mon</th><th>Tue</th><th>Wed</th><th>Thu</th><th>Fri</th><th>Sat</th>
+                                </tr>
                             </thead>
-                            <tbody id="weekHourlyBody"></tbody>
+                            <tbody id="bookingMonthBody"></tbody>
                         </table>
+
+                        <div class="mt-3 small text-muted d-flex flex-wrap gap-3 align-items-center">
+                            <span><span class="badge bg-white text-dark border">&nbsp;&nbsp;</span> Available</span>
+                            <span><span class="badge" style="background-color:#dc3545;">&nbsp;&nbsp;</span> Booked (Full Day — other user)</span>
+                            <span><span class="badge" style="background-color:#f1aeb5;color:#000;">&nbsp;&nbsp;</span> Partially Booked (🕒 — other user)</span>
+                            <span><span class="badge" style="background-color:#198754;">&nbsp;&nbsp;</span> Your existing booking</span>
+                            <span><span class="badge" style="background-color:#dbe9f6;color:#000;border:1px solid #ccc;">&nbsp;&nbsp;</span> Weekend (Fri/Sat)</span>
+                            <span><span class="badge" style="background-color:#e8daef;color:#000;border:1px solid #ccc;">&nbsp;&nbsp;</span> Holiday</span>
+                        </div>
                     </div>
                 </div>
 
-                <!-- Step 4: "Until When?" Panel (opens after clicking a starting hour on the calendar) -->
+                <!-- Step 4: Clicked Date Hourly View (ONLY opens after clicking a date on the monthly calendar) -->
+                <div id="dayHourlySection" class="mb-4 d-none">
+                    <div class="card p-3 border-primary">
+                        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">
+                            <div>
+                                <h5 class="mb-0 text-primary" id="dayHourlyTitle">🕒 Hourly View</h5>
+                                <div class="small text-muted">Click any starting hour below. Red slots are booked by someone else (clicking sends to Manager for approval); green slots are yours; plain white slots are available.</div>
+                            </div>
+                            <button type="button" class="btn btn-sm btn-outline-secondary" id="closeDayHourlyBtn">&times; Close Day</button>
+                        </div>
+
+                        <div class="row g-2 mt-1" id="dayHourlyGrid"></div>
+                    </div>
+                </div>
+
+                <!-- Step 5: "Until When?" Panel (opens after clicking a starting hour) -->
                 <div id="untilWhenSection" class="p-3 mb-3 rounded border border-primary bg-light d-none">
                     <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">
                         <h5 class="mb-0 text-primary">🕒 Confirm Booking Range — Until When?</h5>
                         <button type="button" class="btn btn-sm btn-outline-secondary" id="clearSelectionBtn">Clear Selection</button>
                     </div>
                     <p class="small text-muted mb-3">
-                        You picked a starting hour on the calendar. Choose <strong>until what date and time</strong> you want to book it.
+                        Choose <strong>until what date and time</strong> you want to book (supports multi-day continuous bookings).
                     </p>
 
                     <div id="liveConflictWarning" class="alert alert-warning small py-2 d-none"></div>
@@ -197,6 +221,7 @@
 </div>
 
 <script>
+const DEVICES = {{ devices_payload | tojson }};
 const POTENTIOSTATS = {{ potentiostats | tojson }};
 const INITIAL_EQ_SELECTION = {{ (form_data.equipment_selection or "") | tojson }};
 const PRESELECTED_CHANNELS = new Set({{ (form_data.channel_ids or []) | tojson }});
@@ -217,12 +242,16 @@ const potNoChannels = document.getElementById("potNoChannelsAlert");
 const potColumns = document.getElementById("potChannelsColumns");
 const cat1List = document.getElementById("cat1ChannelList");
 const cat2List = document.getElementById("cat2ChannelList");
+const equipStatusBanner = document.getElementById("equipStatusBanner");
 
-const hourlyCalendarSection = document.getElementById("hourlyCalendarSection");
+const monthlyCalendarSection = document.getElementById("monthlyCalendarSection");
 const calActiveTargetTitle = document.getElementById("calActiveTargetTitle");
-const weekHeaderRow = document.getElementById("weekHeaderRow");
-const weekHourlyBody = document.getElementById("weekHourlyBody");
-const jumpDateInput = document.getElementById("jumpDateInput");
+const calendarMonthLabel = document.getElementById("calendarMonthLabel");
+const bookingMonthBody = document.getElementById("bookingMonthBody");
+
+const dayHourlySection = document.getElementById("dayHourlySection");
+const dayHourlyTitle = document.getElementById("dayHourlyTitle");
+const dayHourlyGrid = document.getElementById("dayHourlyGrid");
 
 const untilWhenSection = document.getElementById("untilWhenSection");
 const liveConflictWarning = document.getElementById("liveConflictWarning");
@@ -232,22 +261,25 @@ const endDateInput = document.getElementById("endDateInput");
 const endTimeInput = document.getElementById("endTimeInput");
 const submitBookingBtn = document.getElementById("submitBookingBtn");
 
-const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTH_NAMES = ["January","February","March","April","May","June",
+                      "July","August","September","October","November","December"];
 const HOLIDAYS_CACHE = {};
+
 let activeCategory = null; // "device" | "potentiostat"
-let activeBookings = [];   // fetched live bookings for the chosen device/channel(s)
-let weekStartDate = getSundayOfWeek(new Date());
+let activeBookings = [];
+let viewYear, viewMonth;
+let clickedDateISO = null;
+
+(function initToToday() {
+    const t = new Date();
+    viewYear = t.getFullYear();
+    viewMonth = t.getMonth();
+})();
 
 function pad(n) { return n < 10 ? "0" + n : "" + n; }
 
 function formatISO(d) {
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-}
-
-function getSundayOfWeek(d) {
-    const copy = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-    copy.setDate(copy.getDate() - copy.getDay());
-    return copy;
 }
 
 function addDays(d, n) {
@@ -263,20 +295,16 @@ function timeToMin(t, fallback) {
     return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
 }
 
-// Compare continuous interval endpoints [dateStr, minutes]
 function comparePoint(dateA, minA, dateB, minB) {
     if (dateA !== dateB) return dateA < dateB ? -1 : 1;
     return minA - minB;
 }
 
 function bookingCoversSlot(b, dateStr, hourStartMin, hourEndMin) {
-    const bsDate = b.start_date;
     const bsMin = timeToMin(b.start_time, 0);
-    const beDate = b.end_date;
     const beMin = timeToMin(b.end_time, 1440);
-    // Overlap iff B_start < (dateStr, hourEndMin) AND B_end > (dateStr, hourStartMin)
-    return comparePoint(bsDate, bsMin, dateStr, hourEndMin) < 0 &&
-           comparePoint(beDate, beMin, dateStr, hourStartMin) > 0;
+    return comparePoint(b.start_date, bsMin, dateStr, hourEndMin) < 0 &&
+           comparePoint(b.end_date, beMin, dateStr, hourStartMin) > 0;
 }
 
 function selectionCoversSlot(dateStr, hourStartMin, hourEndMin) {
@@ -289,6 +317,60 @@ function selectionCoversSlot(dateStr, hourStartMin, hourEndMin) {
     if (comparePoint(sd, sm, ed, em) >= 0) return false;
     return comparePoint(sd, sm, dateStr, hourEndMin) < 0 &&
            comparePoint(ed, em, dateStr, hourStartMin) > 0;
+}
+
+function escapeHtml(text) {
+    const div = document.createElement("div");
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function updateEquipStatusBanner() {
+    const warnings = [];
+    let hasBroken = false;
+
+    if (activeCategory === "device") {
+        const dev = DEVICES.find(d => d.name === generalDeviceSelect.value);
+        if (dev && dev.status === "broken") {
+            hasBroken = true;
+            warnings.push(`❌ "${dev.name}" is currently marked as BROKEN.`);
+        } else if (dev && dev.status === "service") {
+            warnings.push(`🔧 "${dev.name}" is currently marked as DOWN FOR SERVICE.`);
+        }
+    } else if (activeCategory === "potentiostat") {
+        const potId = parseInt(potentiostatSelect.value, 10);
+        const pot = POTENTIOSTATS.find(p => p.id === potId);
+        if (pot) {
+            if (pot.status === "broken") {
+                hasBroken = true;
+                warnings.push(`❌ Potentiostat "${pot.name}" is currently marked as BROKEN.`);
+            } else if (pot.status === "service") {
+                warnings.push(`🔧 Potentiostat "${pot.name}" is currently marked as DOWN FOR SERVICE.`);
+            }
+            const checkedIds = Array.from(document.querySelectorAll('input[name="channel_ids"]:checked'))
+                .map(el => parseInt(el.value, 10));
+            pot.channels.filter(c => checkedIds.includes(c.id)).forEach(ch => {
+                if (ch.status === "broken") {
+                    hasBroken = true;
+                    warnings.push(`❌ Channel "${ch.name}" on ${pot.name} is currently marked as BROKEN.`);
+                } else if (ch.status === "service") {
+                    warnings.push(`🔧 Channel "${ch.name}" on ${pot.name} is currently marked as DOWN FOR SERVICE.`);
+                }
+            });
+        }
+    }
+
+    if (warnings.length) {
+        equipStatusBanner.className = hasBroken ? "alert alert-danger mb-3" : "alert alert-warning mb-3";
+        equipStatusBanner.innerHTML =
+            `<strong>⚠️ Equipment Status Notice:</strong><ul class="mb-0 mt-1">` +
+            warnings.map(w => `<li>${escapeHtml(w)}</li>`).join("") +
+            `</ul>`;
+        equipStatusBanner.classList.remove("d-none");
+    } else {
+        equipStatusBanner.classList.add("d-none");
+        equipStatusBanner.innerHTML = "";
+    }
 }
 
 function getSelectedEquipmentNames() {
@@ -321,16 +403,18 @@ async function ensureHolidaysLoaded(year) {
 }
 
 async function loadBookingsAndRenderCalendar() {
+    updateEquipStatusBanner();
     const names = getSelectedEquipmentNames();
     if (!names.length) {
-        hourlyCalendarSection.classList.add("d-none");
+        monthlyCalendarSection.classList.add("d-none");
+        dayHourlySection.classList.add("d-none");
         untilWhenSection.classList.add("d-none");
         activeBookings = [];
         return;
     }
 
-    calActiveTargetTitle.textContent = `📅 Hourly Availability — ${names.join(", ")}`;
-    hourlyCalendarSection.classList.remove("d-none");
+    calActiveTargetTitle.textContent = `📅 Monthly Availability — ${names.join(", ")}`;
+    monthlyCalendarSection.classList.remove("d-none");
 
     const params = new URLSearchParams();
     names.forEach(n => params.append("equipment", n));
@@ -341,126 +425,182 @@ async function loadBookingsAndRenderCalendar() {
         activeBookings = [];
     }
 
-    await ensureHolidaysLoaded(weekStartDate.getFullYear());
-    const weekEnd = addDays(weekStartDate, 6);
-    if (weekEnd.getFullYear() !== weekStartDate.getFullYear()) {
-        await ensureHolidaysLoaded(weekEnd.getFullYear());
+    await ensureHolidaysLoaded(viewYear);
+    renderMonthCalendar();
+    if (clickedDateISO) {
+        renderDayHourlyView(clickedDateISO, false);
     }
-    renderWeekCalendar();
     updateConflictBanner();
 }
 
-function renderWeekCalendar() {
-    jumpDateInput.value = formatISO(weekStartDate);
+function renderMonthCalendar() {
     const currentUser = userNameSelect.value || "";
-    const todayISO = formatISO(new Date());
+    calendarMonthLabel.textContent = `${MONTH_NAMES[viewMonth]} ${viewYear}`;
 
-    // Build header row: Time + 7 days (Sun..Sat)
-    weekHeaderRow.innerHTML = "";
-    const timeTh = document.createElement("th");
-    timeTh.textContent = "Hour";
-    timeTh.style.width = "64px";
-    weekHeaderRow.appendChild(timeTh);
+    const firstDay = new Date(viewYear, viewMonth, 1);
+    const startWeekday = firstDay.getDay();
+    const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
 
-    const weekDays = [];
-    for (let i = 0; i < 7; i++) {
-        const d = addDays(weekStartDate, i);
-        const iso = formatISO(d);
-        const holName = (HOLIDAYS_CACHE[d.getFullYear()] || {})[iso] || "";
-        const isWeekend = (d.getDay() === 5 || d.getDay() === 6);
-        weekDays.push({ date: d, iso, holName, isWeekend });
-
-        const th = document.createElement("th");
-        th.style.minWidth = "105px";
-        if (iso === todayISO) th.classList.add("table-primary");
-        else if (holName) th.style.backgroundColor = "#f3e8ff";
-        else if (isWeekend) th.style.backgroundColor = "#edf4fb";
-
-        const label = document.createElement("div");
-        label.textContent = `${DAY_NAMES[d.getDay()]} ${pad(d.getDate())}/${pad(d.getMonth() + 1)}`;
-        th.appendChild(label);
-
-        if (holName) {
-            const hSmall = document.createElement("div");
-            hSmall.className = "text-muted fw-normal text-truncate";
-            hSmall.style.fontSize = "0.68rem";
-            hSmall.style.maxWidth = "110px";
-            hSmall.title = holName;
-            hSmall.textContent = holName;
-            th.appendChild(hSmall);
-        }
-        weekHeaderRow.appendChild(th);
+    bookingMonthBody.innerHTML = "";
+    let row = document.createElement("tr");
+    for (let i = 0; i < startWeekday; i++) {
+        row.appendChild(document.createElement("td"));
     }
 
-    // Build 24 hourly rows (00:00..23:00)
-    weekHourlyBody.innerHTML = "";
+    for (let day = 1; day <= daysInMonth; day++) {
+        const iso = `${viewYear}-${pad(viewMonth + 1)}-${pad(day)}`;
+        const cell = document.createElement("td");
+        cell.style.cursor = "pointer";
+        cell.style.height = "46px";
+
+        const weekday = new Date(viewYear, viewMonth, day).getDay();
+        const isWeekend = (weekday === 5 || weekday === 6);
+        const holidayName = (HOLIDAYS_CACHE[viewYear] || {})[iso] || "";
+
+        // Inspect all 24 hours of this day
+        let otherHours = 0;
+        let myHours = 0;
+        let selectedHours = 0;
+        for (let h = 0; h < 24; h++) {
+            const matching = activeBookings.filter(b => bookingCoversSlot(b, iso, h * 60, (h + 1) * 60));
+            if (matching.some(b => b.user_name !== currentUser)) otherHours++;
+            else if (matching.some(b => b.user_name === currentUser)) myHours++;
+            if (selectionCoversSlot(iso, h * 60, (h + 1) * 60)) selectedHours++;
+        }
+
+        let bg = null, fg = "#000";
+        let suffix = "";
+        if (otherHours === 24) {
+            bg = "#dc3545"; fg = "#fff";
+        } else if (otherHours > 0) {
+            bg = "#f1aeb5"; fg = "#000"; suffix = " 🕒";
+        } else if (myHours === 24) {
+            bg = "#198754"; fg = "#fff";
+        } else if (myHours > 0) {
+            bg = "#a3cfbb"; fg = "#000"; suffix = " 🕒";
+        } else if (holidayName) {
+            bg = "#e8daef";
+        } else if (isWeekend) {
+            bg = "#dbe9f6";
+        }
+
+        if (bg) {
+            cell.style.backgroundColor = bg;
+            cell.style.color = fg;
+        }
+        if (clickedDateISO === iso || selectedHours > 0) {
+            cell.style.outline = "3px solid #0d6efd";
+            cell.style.outlineOffset = "-3px";
+            cell.style.fontWeight = "bold";
+        }
+
+        cell.textContent = `${day}${suffix}`;
+
+        const dayBookings = activeBookings.filter(b => bookingCoversSlot(b, iso, 0, 1440));
+        const tips = [];
+        if (holidayName) tips.push(holidayName);
+        if (dayBookings.length) {
+            tips.push(dayBookings.map(b => `${b.user_name} (${b.time_label})`).join(", "));
+        } else {
+            tips.push("Available all day — click to pick hours");
+        }
+        cell.title = tips.join(" | ");
+
+        cell.addEventListener("click", () => {
+            clickedDateISO = iso;
+            renderMonthCalendar();
+            renderDayHourlyView(iso, true);
+        });
+
+        row.appendChild(cell);
+        if ((startWeekday + day) % 7 === 0) {
+            bookingMonthBody.appendChild(row);
+            row = document.createElement("tr");
+        }
+    }
+    if (row.children.length > 0) {
+        while (row.children.length < 7) row.appendChild(document.createElement("td"));
+        bookingMonthBody.appendChild(row);
+    }
+}
+
+function renderDayHourlyView(dateISO, shouldScroll) {
+    const currentUser = userNameSelect.value || "";
+    const yr = parseInt(dateISO.slice(0, 4), 10);
+    const holName = (HOLIDAYS_CACHE[yr] || {})[dateISO] || "";
+
+    dayHourlyTitle.textContent = `🕒 Hourly Schedule for ${dateISO}` + (holName ? ` (${holName})` : "");
+    dayHourlyGrid.innerHTML = "";
+
     for (let h = 0; h < 24; h++) {
-        const tr = document.createElement("tr");
         const hStart = h * 60;
         const hEnd = (h + 1) * 60;
+        const matching = activeBookings.filter(b => bookingCoversSlot(b, dateISO, hStart, hEnd));
+        const isSelected = selectionCoversSlot(dateISO, hStart, hEnd);
+        const hasMine = matching.some(b => b.user_name === currentUser);
+        const hasOthers = matching.some(b => b.user_name !== currentUser);
 
-        const hourTd = document.createElement("td");
-        hourTd.className = "fw-semibold text-muted bg-light text-nowrap";
-        hourTd.textContent = `${pad(h)}:00`;
-        tr.appendChild(hourTd);
+        const col = document.createElement("div");
+        col.className = "col-6 col-sm-4 col-md-3 col-lg-2";
 
-        for (const wd of weekDays) {
-            const td = document.createElement("td");
-            td.style.cursor = "pointer";
-            td.style.height = "26px";
-            td.style.padding = "2px 4px";
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn btn-sm w-100 text-start border py-2 px-2";
+        btn.style.minHeight = "56px";
 
-            const matching = activeBookings.filter(b => bookingCoversSlot(b, wd.iso, hStart, hEnd));
-            const isSelected = selectionCoversSlot(wd.iso, hStart, hEnd);
-
-            const hasMine = matching.some(b => b.user_name === currentUser);
-            const hasOthers = matching.some(b => b.user_name !== currentUser);
-
-            if (isSelected) {
-                if (hasOthers) {
-                    // User selected over an existing red booking -> blue with bold red border
-                    td.style.backgroundColor = "#0d6efd";
-                    td.style.color = "#fff";
-                    td.style.boxShadow = "inset 0 0 0 2px #dc3545";
-                    td.textContent = "⚠️ Selected";
-                } else {
-                    td.style.backgroundColor = "#0d6efd";
-                    td.style.color = "#fff";
-                    td.textContent = "Selected";
-                }
-            } else if (hasOthers) {
-                td.style.backgroundColor = "#dc3545";
-                td.style.color = "#fff";
-                const names = [...new Set(matching.map(b => b.user_name))].join(", ");
-                td.textContent = names;
-            } else if (hasMine) {
-                td.style.backgroundColor = "#198754";
-                td.style.color = "#fff";
-                td.textContent = "Yours";
+        let statusText = "Available";
+        if (isSelected) {
+            btn.style.backgroundColor = "#0d6efd";
+            btn.style.color = "#fff";
+            if (hasOthers) {
+                btn.style.boxShadow = "inset 0 0 0 2px #dc3545";
+                statusText = "⚠️ Selected (Overlap)";
             } else {
-                // Available -> no color!
-                td.style.backgroundColor = "";
-                td.textContent = "";
+                statusText = "✓ Selected";
             }
-
-            const tips = [];
-            if (matching.length) {
-                matching.forEach(b => {
-                    tips.push(
-                        `${b.user_name} — ${b.equipment} (${b.start_date} ${b.start_time || '00:00'} → ${b.end_date} ${b.end_time || '24:00'})` +
-                        (b.status === "pending" ? " [Pending]" : "") +
-                        (b.experiment_details ? `: ${b.experiment_details}` : "")
-                    );
-                });
-            } else {
-                tips.push(`${wd.iso} ${pad(h)}:00 — Available (click to start booking here)`);
-            }
-            td.title = tips.join("\n");
-
-            td.addEventListener("click", () => handleStartHourClick(wd.iso, h));
-            tr.appendChild(td);
+        } else if (hasOthers) {
+            btn.style.backgroundColor = "#dc3545";
+            btn.style.color = "#fff";
+            statusText = [...new Set(matching.map(b => b.user_name))].join(", ");
+        } else if (hasMine) {
+            btn.style.backgroundColor = "#198754";
+            btn.style.color = "#fff";
+            statusText = "Yours";
+        } else {
+            btn.style.backgroundColor = "#ffffff";
+            btn.style.color = "#212529";
         }
-        weekHourlyBody.appendChild(tr);
+
+        const timeDiv = document.createElement("div");
+        timeDiv.className = "fw-bold small";
+        timeDiv.textContent = `${pad(h)}:00 – ${pad(h + 1)}:00`;
+
+        const subDiv = document.createElement("div");
+        subDiv.className = "text-truncate";
+        subDiv.style.fontSize = "0.72rem";
+        subDiv.textContent = statusText;
+
+        btn.appendChild(timeDiv);
+        btn.appendChild(subDiv);
+
+        if (matching.length) {
+            btn.title = matching.map(b =>
+                `${b.user_name} — ${b.equipment} (${b.start_date} ${b.start_time || '00:00'} → ${b.end_date} ${b.end_time || '24:00'})` +
+                (b.status === "pending" ? " [Pending]" : "") +
+                (b.experiment_details ? `: ${b.experiment_details}` : "")
+            ).join("\n");
+        } else {
+            btn.title = `Click to start booking at ${dateISO} ${pad(h)}:00`;
+        }
+
+        btn.addEventListener("click", () => handleStartHourClick(dateISO, h));
+        col.appendChild(btn);
+        dayHourlyGrid.appendChild(col);
+    }
+
+    dayHourlySection.classList.remove("d-none");
+    if (shouldScroll) {
+        dayHourlySection.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }
 }
 
@@ -471,7 +611,6 @@ function handleStartHourClick(dateISO, hour) {
     startTimeInput.required = true;
     endTimeInput.required = true;
 
-    // Default end time = +1 hour (if hour === 23, next day 00:00)
     if (hour < 23) {
         endDateInput.value = dateISO;
         endTimeInput.value = `${pad(hour + 1)}:00`;
@@ -482,7 +621,8 @@ function handleStartHourClick(dateISO, hour) {
     }
 
     untilWhenSection.classList.remove("d-none");
-    renderWeekCalendar();
+    renderMonthCalendar();
+    renderDayHourlyView(dateISO, false);
     updateConflictBanner();
     untilWhenSection.scrollIntoView({ behavior: "smooth", block: "nearest" });
     endTimeInput.focus();
@@ -515,29 +655,39 @@ function updateConflictBanner() {
                comparePoint(ed, em, b.start_date, bsMin) > 0;
     });
 
+    const warnings = [];
     if (overlapping.length > 0) {
         const summary = overlapping
             .map(b => `${b.user_name} (${b.equipment}: ${b.start_date} ${b.start_time || 'All Day'} → ${b.end_date} ${b.end_time || ''})`)
             .join("; ");
+        warnings.push(
+            `<strong>⚠️ Overlap Detected:</strong> Overlaps existing booking(s): ${escapeHtml(summary)}. ` +
+            `Submitting will send your request to the <strong>Lab Manager / Admin</strong> for approval.`
+        );
+    }
+    if (activeCategory === "potentiostat") {
+        const checkedCount = document.querySelectorAll('input[name="channel_ids"]:checked').length;
+        if (checkedCount > 3) {
+            warnings.push(
+                `<strong>⚠️ 3-Channel Limit:</strong> You selected ${checkedCount} potentiostat channels. ` +
+                `Channels beyond the 3-channel per-user limit will be sent to the <strong>Lab Manager / Admin</strong> for approval.`
+            );
+        }
+    }
+
+    if (warnings.length) {
         liveConflictWarning.className = "alert alert-warning small py-2";
-        liveConflictWarning.innerHTML =
-            `<strong>⚠️ Overlap Detected:</strong> Your selected time overlaps an existing booking: ${escapeHtml(summary)}. ` +
-            `You can still submit — your booking request will be sent to the <strong>Lab Manager / Admin</strong> for approval.`;
+        liveConflictWarning.innerHTML = warnings.join("<br>");
         liveConflictWarning.classList.remove("d-none");
     } else {
         liveConflictWarning.classList.add("d-none");
     }
 }
 
-function escapeHtml(text) {
-    const div = document.createElement("div");
-    div.textContent = text;
-    return div.innerHTML;
-}
-
-// Category switcher
 function setCategory(cat) {
     activeCategory = cat;
+    clickedDateISO = null;
+    dayHourlySection.classList.add("d-none");
     catDeviceBtn.classList.toggle("btn-primary", cat === "device");
     catDeviceBtn.classList.toggle("btn-outline-primary", cat !== "device");
     catPotBtn.classList.toggle("btn-primary", cat === "potentiostat");
@@ -599,7 +749,7 @@ function renderPotentiostatChannels() {
         }
         list.forEach(ch => {
             const wrap = document.createElement("div");
-            wrap.className = "form-check";
+            wrap.className = "form-check d-flex align-items-center gap-2";
             const input = document.createElement("input");
             input.className = "form-check-input";
             input.type = "checkbox";
@@ -617,6 +767,18 @@ function renderPotentiostatChannels() {
 
             wrap.appendChild(input);
             wrap.appendChild(lbl);
+
+            if (ch.status === "broken") {
+                const badge = document.createElement("span");
+                badge.className = "badge bg-danger";
+                badge.textContent = "❌ Broken";
+                wrap.appendChild(badge);
+            } else if (ch.status === "service") {
+                const badge = document.createElement("span");
+                badge.className = "badge bg-warning text-dark";
+                badge.textContent = "🔧 Down for Service";
+                wrap.appendChild(badge);
+            }
             container.appendChild(wrap);
         });
     }
@@ -631,25 +793,25 @@ catDeviceBtn.addEventListener("click", () => setCategory("device"));
 catPotBtn.addEventListener("click", () => setCategory("potentiostat"));
 generalDeviceSelect.addEventListener("change", () => syncHiddenSelectionAndReload());
 potentiostatSelect.addEventListener("change", () => renderPotentiostatChannels());
-userNameSelect.addEventListener("change", () => renderWeekCalendar());
+userNameSelect.addEventListener("change", () => {
+    renderMonthCalendar();
+    if (clickedDateISO) renderDayHourlyView(clickedDateISO, false);
+});
 
-document.getElementById("prevWeekBtn").addEventListener("click", () => {
-    weekStartDate = addDays(weekStartDate, -7);
+document.getElementById("prevMonthBtn").addEventListener("click", () => {
+    viewMonth--;
+    if (viewMonth < 0) { viewMonth = 11; viewYear--; }
     loadBookingsAndRenderCalendar();
 });
-document.getElementById("nextWeekBtn").addEventListener("click", () => {
-    weekStartDate = addDays(weekStartDate, 7);
+document.getElementById("nextMonthBtn").addEventListener("click", () => {
+    viewMonth++;
+    if (viewMonth > 11) { viewMonth = 0; viewYear++; }
     loadBookingsAndRenderCalendar();
 });
-document.getElementById("thisWeekBtn").addEventListener("click", () => {
-    weekStartDate = getSundayOfWeek(new Date());
-    loadBookingsAndRenderCalendar();
-});
-jumpDateInput.addEventListener("change", () => {
-    if (jumpDateInput.value) {
-        weekStartDate = getSundayOfWeek(new Date(jumpDateInput.value + "T00:00:00"));
-        loadBookingsAndRenderCalendar();
-    }
+document.getElementById("closeDayHourlyBtn").addEventListener("click", () => {
+    dayHourlySection.classList.add("d-none");
+    clickedDateISO = null;
+    renderMonthCalendar();
 });
 
 [startDateInput, startTimeInput, endDateInput, endTimeInput].forEach(el => {
@@ -657,7 +819,8 @@ jumpDateInput.addEventListener("change", () => {
         if (startTimeInput.value && endTimeInput.value) {
             useHoursInput.value = "1";
         }
-        renderWeekCalendar();
+        renderMonthCalendar();
+        if (clickedDateISO) renderDayHourlyView(clickedDateISO, false);
         updateConflictBanner();
     });
 });
@@ -676,7 +839,8 @@ document.querySelectorAll(".quick-dur-btn").forEach(btn => {
         endTimeInput.required = true;
         endDateInput.value = formatISO(endD);
         endTimeInput.value = `${pad(Math.floor(remMin / 60))}:${pad(remMin % 60)}`;
-        renderWeekCalendar();
+        renderMonthCalendar();
+        if (clickedDateISO) renderDayHourlyView(clickedDateISO, false);
         updateConflictBanner();
     });
 });
@@ -688,7 +852,8 @@ document.getElementById("until17Btn").addEventListener("click", () => {
     endTimeInput.required = true;
     endDateInput.value = startDateInput.value;
     endTimeInput.value = "17:00";
-    renderWeekCalendar();
+    renderMonthCalendar();
+    if (clickedDateISO) renderDayHourlyView(clickedDateISO, false);
     updateConflictBanner();
 });
 
@@ -700,7 +865,8 @@ document.getElementById("allDayBtn").addEventListener("click", () => {
     startTimeInput.required = false;
     endTimeInput.required = false;
     endDateInput.value = startDateInput.value;
-    renderWeekCalendar();
+    renderMonthCalendar();
+    if (clickedDateISO) renderDayHourlyView(clickedDateISO, false);
     updateConflictBanner();
 });
 
@@ -710,7 +876,8 @@ document.getElementById("clearSelectionBtn").addEventListener("click", () => {
     endDateInput.value = "";
     endTimeInput.value = "";
     untilWhenSection.classList.add("d-none");
-    renderWeekCalendar();
+    renderMonthCalendar();
+    if (clickedDateISO) renderDayHourlyView(clickedDateISO, false);
 });
 
 // Restore previous selection on validation error re-render

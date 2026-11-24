@@ -25,12 +25,14 @@ from .auth import (
 )
 from .database import Base, SessionLocal, engine, get_db
 from .models import (
+    ALL_EQUIP_STATUSES,
     AdminCredential,
     AppSetting,
     BOOKING_TYPE_DEVICE,
     BOOKING_TYPE_POTENTIOSTAT,
     Booking,
     Device,
+    EQUIP_STATUS_AVAILABLE,
     Holiday,
     Potentiostat,
     PotentiostatChannel,
@@ -87,6 +89,9 @@ def _auto_migrate_schema() -> None:
         if "is_manager" not in user_cols:
             conn.execute(text("ALTER TABLE users ADD COLUMN is_manager BOOLEAN NOT NULL DEFAULT 0"))
             logger.info("Added is_manager column to users table.")
+        if "email" not in user_cols:
+            conn.execute(text("ALTER TABLE users ADD COLUMN email VARCHAR(255) DEFAULT ''"))
+            logger.info("Added email column to users table.")
 
         holiday_cols = {
             row[1]
@@ -95,6 +100,15 @@ def _auto_migrate_schema() -> None:
         if "is_deleted" not in holiday_cols:
             conn.execute(text("ALTER TABLE holidays ADD COLUMN is_deleted BOOLEAN NOT NULL DEFAULT 0"))
             logger.info("Added is_deleted column to holidays table.")
+
+        for tbl in ("devices", "potentiostats", "potentiostat_channels"):
+            t_cols = {
+                row[1]
+                for row in conn.execute(text(f"PRAGMA table_info({tbl})")).fetchall()
+            }
+            if "status" not in t_cols:
+                conn.execute(text(f"ALTER TABLE {tbl} ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'available'"))
+                logger.info("Added status column to %s table.", tbl)
 
 
 _auto_migrate_schema()
@@ -166,13 +180,27 @@ def _get_potentiostats_payload(db: Session) -> list[dict]:
             {
                 "id": p.id,
                 "name": p.name,
+                "status": p.status or EQUIP_STATUS_AVAILABLE,
                 "channels": [
-                    {"id": ch.id, "name": ch.name, "category": ch.category}
+                    {
+                        "id": ch.id,
+                        "name": ch.name,
+                        "category": ch.category,
+                        "status": ch.status or EQUIP_STATUS_AVAILABLE,
+                    }
                     for ch in channels
                 ],
             }
         )
     return payload
+
+
+def _get_devices_payload(db: Session) -> list[dict]:
+    devs = db.query(Device).order_by(Device.name).all()
+    return [
+        {"id": d.id, "name": d.name, "status": d.status or EQUIP_STATUS_AVAILABLE}
+        for d in devs
+    ]
 
 
 def _seed_startup_state() -> None:
@@ -346,17 +374,20 @@ def logout(request: Request):
 @app.get("/account")
 def account_page(
     request: Request,
+    db: Session = Depends(get_db),
     current_user: dict = Depends(require_user),
 ):
     if current_user["role"] == "admin":
         return RedirectResponse(url="/admin/settings", status_code=303)
+    record = db.query(User).filter(User.username == current_user["username"]).first()
     return templates.TemplateResponse(
         "account.html",
         {
             "request": request,
             "username": current_user["username"],
+            "user_email": (record.email or "") if record else "",
             "errors": None,
-            "success": False,
+            "success": None,
         },
     )
 
@@ -388,8 +419,9 @@ def account_update_password(
             {
                 "request": request,
                 "username": current_user["username"],
+                "user_email": (record.email or "") if record else "",
                 "errors": errors,
-                "success": False,
+                "success": None,
             },
             status_code=422,
         )
@@ -401,8 +433,9 @@ def account_update_password(
         {
             "request": request,
             "username": current_user["username"],
+            "user_email": record.email or "",
             "errors": None,
-            "success": True,
+            "success": "Your password has been updated.",
         },
     )
     is_https = request.headers.get("x-forwarded-proto", "").lower() == "https"
@@ -417,6 +450,46 @@ def account_update_password(
     return resp
 
 
+@app.post("/account/email")
+def account_update_email(
+    request: Request,
+    email: str = Form(""),
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_user),
+):
+    if current_user["role"] == "admin":
+        return RedirectResponse(url="/admin/settings", status_code=303)
+    record = db.query(User).filter(User.username == current_user["username"]).first()
+    clean_email = email.strip()
+    errors = []
+    if clean_email and ("@" not in clean_email or len(clean_email) > 255):
+        errors.append("Please enter a valid email address.")
+    if errors or record is None:
+        return templates.TemplateResponse(
+            "account.html",
+            {
+                "request": request,
+                "username": current_user["username"],
+                "user_email": clean_email,
+                "errors": errors or ["Account not found."],
+                "success": None,
+            },
+            status_code=422,
+        )
+    record.email = clean_email
+    db.commit()
+    return templates.TemplateResponse(
+        "account.html",
+        {
+            "request": request,
+            "username": current_user["username"],
+            "user_email": record.email or "",
+            "errors": None,
+            "success": "Your email address has been saved.",
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # Authenticated Lab Member: booking submission form & dashboard
 # ---------------------------------------------------------------------------
@@ -427,6 +500,7 @@ def booking_form(
     current_user: dict = Depends(require_user),
 ):
     devices = db.query(Device).order_by(Device.name).all()
+    devices_payload = _get_devices_payload(db)
     potentiostats = _get_potentiostats_payload(db)
     pot_cat_labels = _get_potentiostat_category_labels(db)
     if current_user["role"] in ("admin", "manager"):
@@ -440,6 +514,7 @@ def booking_form(
             "errors": None,
             "form_data": {},
             "devices": devices,
+            "devices_payload": devices_payload,
             "potentiostats": potentiostats,
             "pot_cat_labels": pot_cat_labels,
             "usernames": usernames,
@@ -463,6 +538,7 @@ def create_booking(
     current_user: dict = Depends(require_user),
 ):
     devices = db.query(Device).order_by(Device.name).all()
+    devices_payload = _get_devices_payload(db)
     device_names = {d.name for d in devices}
     potentiostats = _get_potentiostats_payload(db)
     pot_cat_labels = _get_potentiostat_category_labels(db)
@@ -569,6 +645,7 @@ def create_booking(
                 "errors": errors,
                 "form_data": form_data,
                 "devices": devices,
+                "devices_payload": devices_payload,
                 "potentiostats": potentiostats,
                 "pot_cat_labels": pot_cat_labels,
                 "usernames": usernames,
@@ -591,10 +668,24 @@ def create_booking(
             exclude_id=None,
         )
         has_conflict = len(conflicts) > 0
-        if has_conflict:
-            any_conflict = True
+
+        exceeds_pot_limit = False
+        user_pot_overlaps: list[models.Booking] = []
         if meta["booking_type"] == BOOKING_TYPE_POTENTIOSTAT:
             is_potentiostat_booking = True
+            exceeds_pot_limit, user_pot_overlaps, _ = conflict.check_user_potentiostat_channel_limit(
+                db,
+                user_name=validated.user_name,
+                start_date=validated.start_date,
+                end_date=validated.end_date,
+                start_time=validated.start_time,
+                end_time=validated.end_time,
+                exclude_id=None,
+            )
+
+        needs_approval = has_conflict or exceeds_pot_limit
+        if needs_approval:
+            any_conflict = True
 
         booking = models.Booking(
             user_name=validated.user_name,
@@ -607,7 +698,7 @@ def create_booking(
             booking_type=meta["booking_type"],
             potentiostat_name=meta["pot_name"],
             channel_category=meta["cat"],
-            status=models.STATUS_PENDING if has_conflict else models.STATUS_APPROVED,
+            status=models.STATUS_PENDING if needs_approval else models.STATUS_APPROVED,
         )
         db.add(booking)
         db.commit()
@@ -615,12 +706,16 @@ def create_booking(
 
         if has_conflict:
             notifications.notify_conflict(booking, conflicts, db=db)
+        if exceeds_pot_limit:
+            notifications.notify_potentiostat_limit(booking, user_pot_overlaps, db=db)
 
         created_results.append(
             {
                 "booking": booking,
                 "has_conflict": has_conflict,
                 "conflicts": conflicts,
+                "exceeds_pot_limit": exceeds_pot_limit,
+                "user_pot_overlaps": user_pot_overlaps,
             }
         )
 
@@ -792,6 +887,7 @@ def admin_panel(
     actor: dict = Depends(require_manager_or_admin),
 ):
     conflicts_by_id = conflict.all_conflicting_bookings(db)
+    pot_limit_by_id = conflict.all_potentiostat_limit_violations(db)
 
     pending = (
         db.query(models.Booking)
@@ -867,6 +963,7 @@ def admin_panel(
             "approved": approved,
             "denied": denied,
             "conflicts_by_id": conflicts_by_id,
+            "pot_limit_by_id": pot_limit_by_id,
             "denied_conflicts_by_id": denied_conflicts_by_id,
             "conflict_modal_options": conflict_modal_options,
             "users": users,
@@ -942,6 +1039,65 @@ def admin_create_device(
     )
 
 
+@app.post("/admin/devices/{device_id}/rename")
+def admin_rename_device(
+    device_id: int,
+    new_name: str = Form(...),
+    db: Session = Depends(get_db),
+    _admin: str = Depends(require_admin),
+):
+    device = db.query(Device).get(device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+    clean_name = new_name.strip()
+    if not clean_name or len(clean_name) > 120:
+        return RedirectResponse(
+            url=f"/admin?err={quote_plus('Device name must be 1 to 120 characters.')}",
+            status_code=303,
+        )
+    if clean_name == device.name:
+        return RedirectResponse(url="/admin", status_code=303)
+    if db.query(Device).filter(Device.name == clean_name).first():
+        return RedirectResponse(
+            url=f"/admin?err={quote_plus(f'Device \"{clean_name}\" already exists.')}",
+            status_code=303,
+        )
+    old_name = device.name
+    device.name = clean_name
+    # Cascade rename to existing device bookings so schedules and conflicts stay consistent
+    db.query(Booking).filter(
+        Booking.booking_type == BOOKING_TYPE_DEVICE,
+        Booking.equipment == old_name,
+    ).update({Booking.equipment: clean_name}, synchronize_session=False)
+    db.commit()
+    return RedirectResponse(
+        url=f"/admin?msg={quote_plus(f'Renamed device \"{old_name}\" to \"{clean_name}\".')}",
+        status_code=303,
+    )
+
+
+@app.post("/admin/devices/{device_id}/status")
+def admin_device_status(
+    device_id: int,
+    status_value: str = Form(...),
+    db: Session = Depends(get_db),
+    _actor: dict = Depends(require_manager_or_admin),
+):
+    device = db.query(Device).get(device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+    st = status_value.strip().lower()
+    if st not in ALL_EQUIP_STATUSES:
+        st = EQUIP_STATUS_AVAILABLE
+    device.status = st
+    db.commit()
+    labels = {"available": "Available", "service": "Down for Service", "broken": "Broken"}
+    return RedirectResponse(
+        url=f"/admin?msg={quote_plus(f'Marked device \"{device.name}\" as {labels[st]}.')}",
+        status_code=303,
+    )
+
+
 @app.post("/admin/devices/{device_id}/delete")
 def admin_delete_device(
     device_id: int,
@@ -1008,6 +1164,74 @@ def admin_create_potentiostat(
     )
 
 
+@app.post("/admin/potentiostats/{pot_id}/rename")
+def admin_rename_potentiostat(
+    pot_id: int,
+    new_name: str = Form(...),
+    db: Session = Depends(get_db),
+    _admin: str = Depends(require_admin),
+):
+    pot = db.query(Potentiostat).get(pot_id)
+    if not pot:
+        raise HTTPException(status_code=404, detail="Potentiostat not found")
+    clean_name = new_name.strip()
+    if not clean_name or len(clean_name) > 120:
+        return RedirectResponse(
+            url=f"/admin?err={quote_plus('Potentiostat name must be 1 to 120 characters.')}",
+            status_code=303,
+        )
+    if clean_name == pot.name:
+        return RedirectResponse(url="/admin", status_code=303)
+    if db.query(Potentiostat).filter(Potentiostat.name == clean_name).first():
+        return RedirectResponse(
+            url=f"/admin?err={quote_plus(f'Potentiostat \"{clean_name}\" already exists.')}",
+            status_code=303,
+        )
+    old_name = pot.name
+    pot.name = clean_name
+    # Cascade rename to existing potentiostat bookings
+    pot_bookings = (
+        db.query(Booking)
+        .filter(
+            Booking.booking_type == BOOKING_TYPE_POTENTIOSTAT,
+            Booking.potentiostat_name == old_name,
+        )
+        .all()
+    )
+    prefix = f"{old_name} — "
+    for b in pot_bookings:
+        ch_part = b.equipment[len(prefix):] if b.equipment.startswith(prefix) else b.channel_name
+        b.potentiostat_name = clean_name
+        b.equipment = f"{clean_name} — {ch_part}"
+    db.commit()
+    return RedirectResponse(
+        url=f"/admin?msg={quote_plus(f'Renamed potentiostat \"{old_name}\" to \"{clean_name}\".')}",
+        status_code=303,
+    )
+
+
+@app.post("/admin/potentiostats/{pot_id}/status")
+def admin_potentiostat_status(
+    pot_id: int,
+    status_value: str = Form(...),
+    db: Session = Depends(get_db),
+    _actor: dict = Depends(require_manager_or_admin),
+):
+    pot = db.query(Potentiostat).get(pot_id)
+    if not pot:
+        raise HTTPException(status_code=404, detail="Potentiostat not found")
+    st = status_value.strip().lower()
+    if st not in ALL_EQUIP_STATUSES:
+        st = EQUIP_STATUS_AVAILABLE
+    pot.status = st
+    db.commit()
+    labels = {"available": "Available", "service": "Down for Service", "broken": "Broken"}
+    return RedirectResponse(
+        url=f"/admin?msg={quote_plus(f'Marked potentiostat \"{pot.name}\" as {labels[st]}.')}",
+        status_code=303,
+    )
+
+
 @app.post("/admin/potentiostats/{pot_id}/delete")
 def admin_delete_potentiostat(
     pot_id: int,
@@ -1065,6 +1289,81 @@ def admin_create_potentiostat_channel(
     )
 
 
+@app.post("/admin/potentiostats/channels/{channel_id}/rename")
+def admin_rename_potentiostat_channel(
+    channel_id: int,
+    new_name: str = Form(...),
+    category: str = Form("1"),
+    db: Session = Depends(get_db),
+    _admin: str = Depends(require_admin),
+):
+    ch = db.query(PotentiostatChannel).get(channel_id)
+    if not ch:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    pot = db.query(Potentiostat).get(ch.potentiostat_id)
+    clean_name = new_name.strip()
+    cat = "2" if category.strip() == "2" else "1"
+    if not clean_name or len(clean_name) > 80:
+        return RedirectResponse(
+            url=f"/admin?err={quote_plus('Channel name must be 1 to 80 characters.')}",
+            status_code=303,
+        )
+    if clean_name != ch.name:
+        dup = (
+            db.query(PotentiostatChannel)
+            .filter(
+                PotentiostatChannel.potentiostat_id == ch.potentiostat_id,
+                PotentiostatChannel.name == clean_name,
+            )
+            .first()
+        )
+        if dup:
+            return RedirectResponse(
+                url=f"/admin?err={quote_plus(f'Channel \"{clean_name}\" already exists on {pot.name}.')}",
+                status_code=303,
+            )
+    old_name = ch.name
+    ch.name = clean_name
+    ch.category = cat
+    if pot:
+        old_eq = f"{pot.name} — {old_name}"
+        new_eq = f"{pot.name} — {clean_name}"
+        db.query(Booking).filter(
+            Booking.booking_type == BOOKING_TYPE_POTENTIOSTAT,
+            Booking.equipment == old_eq,
+        ).update(
+            {Booking.equipment: new_eq, Booking.channel_category: cat},
+            synchronize_session=False,
+        )
+    db.commit()
+    return RedirectResponse(
+        url=f"/admin?msg={quote_plus(f'Updated channel \"{old_name}\" -> \"{clean_name}\".')}",
+        status_code=303,
+    )
+
+
+@app.post("/admin/potentiostats/channels/{channel_id}/status")
+def admin_potentiostat_channel_status(
+    channel_id: int,
+    status_value: str = Form(...),
+    db: Session = Depends(get_db),
+    _actor: dict = Depends(require_manager_or_admin),
+):
+    ch = db.query(PotentiostatChannel).get(channel_id)
+    if not ch:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    st = status_value.strip().lower()
+    if st not in ALL_EQUIP_STATUSES:
+        st = EQUIP_STATUS_AVAILABLE
+    ch.status = st
+    db.commit()
+    labels = {"available": "Available", "service": "Down for Service", "broken": "Broken"}
+    return RedirectResponse(
+        url=f"/admin?msg={quote_plus(f'Marked channel \"{ch.name}\" as {labels[st]}.')}",
+        status_code=303,
+    )
+
+
 @app.post("/admin/potentiostats/channels/{channel_id}/delete")
 def admin_delete_potentiostat_channel(
     channel_id: int,
@@ -1086,14 +1385,21 @@ def admin_delete_potentiostat_channel(
 @app.post("/admin/users/create")
 def admin_create_user(
     username: str = Form(...),
+    email: str = Form(""),
     default_password: str = Form(...),
     db: Session = Depends(get_db),
     _actor: dict = Depends(require_manager_or_admin),
 ):
     clean_username = username.strip()
+    clean_email = email.strip()
     if not clean_username or len(clean_username) > 120:
         return RedirectResponse(
             url=f"/admin?err={quote_plus('Username must be 1 to 120 characters.')}",
+            status_code=303,
+        )
+    if clean_email and ("@" not in clean_email or len(clean_email) > 255):
+        return RedirectResponse(
+            url=f"/admin?err={quote_plus('Please enter a valid email address.')}",
             status_code=303,
         )
     if len(default_password) < 4:
@@ -1109,10 +1415,46 @@ def admin_create_user(
             status_code=303,
         )
 
-    db.add(User(username=clean_username, password_hash=hash_password(default_password), is_manager=False))
+    db.add(
+        User(
+            username=clean_username,
+            email=clean_email,
+            password_hash=hash_password(default_password),
+            is_manager=False,
+        )
+    )
     db.commit()
     return RedirectResponse(
         url=f"/admin?msg={quote_plus(f'Added lab user \"{clean_username}\".')}",
+        status_code=303,
+    )
+
+
+@app.post("/admin/users/{user_id}/update-email")
+def admin_update_user_email(
+    user_id: int,
+    email: str = Form(""),
+    db: Session = Depends(get_db),
+    actor: dict = Depends(require_manager_or_admin),
+):
+    user = db.query(User).get(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if actor["role"] == "manager" and user.is_manager and user.username != actor["username"]:
+        return RedirectResponse(
+            url=f"/admin?err={quote_plus('Only the main Lab Admin can edit another Manager account.')}",
+            status_code=303,
+        )
+    clean_email = email.strip()
+    if clean_email and ("@" not in clean_email or len(clean_email) > 255):
+        return RedirectResponse(
+            url=f"/admin?err={quote_plus('Please enter a valid email address.')}",
+            status_code=303,
+        )
+    user.email = clean_email
+    db.commit()
+    return RedirectResponse(
+        url=f"/admin?msg={quote_plus(f'Updated email for \"{user.username}\".')}",
         status_code=303,
     )
 
@@ -1454,11 +1796,15 @@ def admin_settings_update(
     return resp
 
 
-def _approve_and_deny_conflicts(db: Session, winner: models.Booking) -> list[models.Booking]:
+def _approve_and_deny_conflicts(
+    db: Session,
+    winner: models.Booking,
+    actor_name: str,
+) -> list[models.Booking]:
     """
-    Approves `winner` and automatically denies every overlapping live booking
-    (pending or approved) on the same device & overlapping date/time, guaranteeing
-    no double-booking can ever exist.
+    Approves `winner`, automatically denies every overlapping live booking
+    (pending or approved) on the same device & overlapping date/time, and
+    emails both the approved user and any denied/revoked users.
     """
     overlapping = conflict.find_conflicts(
         db,
@@ -1470,10 +1816,17 @@ def _approve_and_deny_conflicts(db: Session, winner: models.Booking) -> list[mod
         exclude_id=winner.id,
         statuses=(models.STATUS_PENDING, models.STATUS_APPROVED),
     )
+    prev_statuses = {other.id: other.status for other in overlapping}
     winner.status = models.STATUS_APPROVED
     for other in overlapping:
         other.status = models.STATUS_DENIED
     db.commit()
+
+    notifications.notify_user_booking_status(winner, "approved", actor_name, db)
+    for other in overlapping:
+        action = "revoked" if prev_statuses.get(other.id) == models.STATUS_APPROVED else "denied"
+        notifications.notify_user_booking_status(other, action, actor_name, db)
+
     return overlapping
 
 
@@ -1481,12 +1834,12 @@ def _approve_and_deny_conflicts(db: Session, winner: models.Booking) -> list[mod
 def resolve_conflict_choice(
     winner_id: int = Form(...),
     db: Session = Depends(get_db),
-    _actor: dict = Depends(require_manager_or_admin),
+    actor: dict = Depends(require_manager_or_admin),
 ):
     winner = db.query(models.Booking).get(winner_id)
     if not winner:
         raise HTTPException(status_code=404, detail="Chosen booking not found")
-    denied_others = _approve_and_deny_conflicts(db, winner)
+    denied_others = _approve_and_deny_conflicts(db, winner, actor["username"])
     if denied_others:
         denied_summary = ", ".join(f"#{b.id} ({b.user_name})" for b in denied_others)
         msg = (
@@ -1503,12 +1856,12 @@ def resolve_conflict_choice(
 def approve_booking(
     booking_id: int,
     db: Session = Depends(get_db),
-    _actor: dict = Depends(require_manager_or_admin),
+    actor: dict = Depends(require_manager_or_admin),
 ):
     booking = db.query(models.Booking).get(booking_id)
     if not booking:
         raise HTTPException(status_code=404, detail="Booking not found")
-    denied_others = _approve_and_deny_conflicts(db, booking)
+    denied_others = _approve_and_deny_conflicts(db, booking, actor["username"])
     if denied_others:
         denied_summary = ", ".join(f"#{b.id} ({b.user_name})" for b in denied_others)
         msg = (
@@ -1516,28 +1869,38 @@ def approve_booking(
             f"conflicting booking(s): {denied_summary}."
         )
         return RedirectResponse(url=f"/admin?msg={quote_plus(msg)}", status_code=303)
-    return RedirectResponse(url="/admin", status_code=303)
+    return RedirectResponse(
+        url=f"/admin?msg={quote_plus(f'Approved #{booking.id} ({booking.user_name} on {booking.equipment}).')}",
+        status_code=303,
+    )
 
 
 @app.post("/admin/bookings/{booking_id}/deny")
 def deny_booking(
     booking_id: int,
     db: Session = Depends(get_db),
-    _actor: dict = Depends(require_manager_or_admin),
+    actor: dict = Depends(require_manager_or_admin),
 ):
     booking = db.query(models.Booking).get(booking_id)
     if not booking:
         raise HTTPException(status_code=404, detail="Booking not found")
+    prev_status = booking.status
     booking.status = models.STATUS_DENIED
     db.commit()
-    return RedirectResponse(url="/admin", status_code=303)
+    action = "revoked" if prev_status == models.STATUS_APPROVED else "denied"
+    notifications.notify_user_booking_status(booking, action, actor["username"], db)
+    verb = "Revoked / cancelled" if prev_status == models.STATUS_APPROVED else "Denied"
+    return RedirectResponse(
+        url=f"/admin?msg={quote_plus(f'{verb} #{booking.id} ({booking.user_name} on {booking.equipment}).')}",
+        status_code=303,
+    )
 
 
 @app.post("/admin/bookings/{booking_id}/delete")
 def delete_booking(
     booking_id: int,
     db: Session = Depends(get_db),
-    _actor: dict = Depends(require_manager_or_admin),
+    actor: dict = Depends(require_manager_or_admin),
 ):
     booking = db.query(models.Booking).get(booking_id)
     if not booking:

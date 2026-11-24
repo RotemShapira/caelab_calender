@@ -2,7 +2,7 @@
 {% block title %}{% if is_full_admin %}Admin Panel{% else %}Lab Manager Panel{% endif %}{% endblock %}
 {% block content %}
 <div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-1">
-    <h3>{% if is_full_admin %}🛠️ Admin: Booking Resolution &amp; Lab Management{% else %}🛠️ Lab Manager: Bookings, Users &amp; Holidays{% endif %}</h3>
+    <h3>{% if is_full_admin %}🛠️ Admin: Booking Resolution &amp; Lab Management{% else %}🛠️ Lab Manager: Bookings, Equipment Status, Users &amp; Holidays{% endif %}</h3>
     <div class="d-flex gap-2">
         <a href="/admin/holidays" class="btn btn-sm btn-outline-primary">📅 Manage Holidays</a>
         {% if is_full_admin %}
@@ -10,7 +10,10 @@
         {% endif %}
     </div>
 </div>
-<p class="text-muted">Rows highlighted in yellow have a detected conflict (same device + overlapping date & hours). Click <strong>Choose Winner</strong> to pick the one booking to keep — all other colliding requests will be denied automatically.</p>
+<p class="text-muted">
+    Rows highlighted in yellow have a detected conflict or exceed the 3-channel potentiostat user limit.
+    Approving, revoking, or cancelling any booking automatically emails the user (if their email is set).
+</p>
 
 {% if admin_msg %}
 <div class="alert alert-success">{{ admin_msg }}</div>
@@ -31,17 +34,19 @@
         <thead>
             <tr>
                 <th>#</th>
-                <th>Device</th>
+                <th>Device / Channel</th>
                 <th>User</th>
-                <th>Dates & Hours</th>
+                <th>Dates &amp; Hours</th>
                 <th>Details</th>
-                <th>Conflicts With</th>
+                <th>Conflict / Limit Reason</th>
                 <th>Action</th>
             </tr>
         </thead>
         <tbody>
             {% for b in pending %}
-            <tr class="{% if b.id in conflicts_by_id %}conflict-row{% endif %}">
+            {% set is_conflict = b.id in conflicts_by_id %}
+            {% set is_pot_limit = b.id in pot_limit_by_id %}
+            <tr class="{% if is_conflict or is_pot_limit %}conflict-row{% endif %}">
                 <td>{{ b.id }}</td>
                 <td><strong>{{ b.equipment }}</strong></td>
                 <td>{{ b.user_name }}</td>
@@ -51,8 +56,9 @@
                 </td>
                 <td>{{ b.experiment_details or "—" }}</td>
                 <td>
-                    {% if b.id in conflicts_by_id %}
-                        <ul class="mb-0 ps-3">
+                    {% if is_conflict %}
+                        <div class="small fw-semibold text-danger mb-1">⚠️ Collides with:</div>
+                        <ul class="mb-1 ps-3 small">
                         {% for c in conflicts_by_id[b.id] %}
                             <li>
                                 #{{ c.id }} <strong>{{ c.user_name }}</strong>
@@ -61,12 +67,21 @@
                             </li>
                         {% endfor %}
                         </ul>
-                    {% else %}
+                    {% endif %}
+                    {% if is_pot_limit %}
+                        <div class="small fw-semibold text-warning-emphasis mb-1">⚡ Exceeds 3-channel potentiostat limit:</div>
+                        <ul class="mb-0 ps-3 small">
+                        {% for ob in pot_limit_by_id[b.id] %}
+                            <li>#{{ ob.id }} {{ ob.equipment }} ({{ ob.start_date }}–{{ ob.end_date }}, {{ ob.time_label }}, {{ ob.status }})</li>
+                        {% endfor %}
+                        </ul>
+                    {% endif %}
+                    {% if not is_conflict and not is_pot_limit %}
                         <span class="text-muted">none</span>
                     {% endif %}
                 </td>
                 <td class="text-nowrap">
-                    {% if b.id in conflicts_by_id %}
+                    {% if is_conflict %}
                         <button type="button"
                                 class="btn btn-sm btn-warning fw-semibold open-conflict-modal-btn"
                                 data-booking-id="{{ b.id }}">
@@ -74,7 +89,9 @@
                         </button>
                     {% else %}
                         <form method="post" action="/admin/bookings/{{ b.id }}/approve" class="d-inline">
-                            <button class="btn btn-sm btn-success" type="submit">Approve</button>
+                            <button class="btn btn-sm btn-success" type="submit">
+                                {% if is_pot_limit %}Approve (&gt;3 Ch){% else %}Approve{% endif %}
+                            </button>
                         </form>
                     {% endif %}
                     <form method="post" action="/admin/bookings/{{ b.id }}/deny" class="d-inline">
@@ -94,7 +111,7 @@
 {% else %}
 <div class="table-responsive mb-4">
     <table class="table table-sm align-middle mb-0">
-        <thead><tr><th>#</th><th>Device</th><th>User</th><th>Dates</th><th>Hours</th><th>Action</th></tr></thead>
+        <thead><tr><th>#</th><th>Device / Channel</th><th>User</th><th>Dates</th><th>Hours</th><th>Action</th></tr></thead>
         <tbody>
             {% for b in approved %}
             <tr>
@@ -104,8 +121,9 @@
                 <td>{{ b.start_date }} → {{ b.end_date }}</td>
                 <td>{{ b.time_label }}</td>
                 <td>
-                    <form method="post" action="/admin/bookings/{{ b.id }}/deny" class="d-inline">
-                        <button class="btn btn-sm btn-outline-danger" type="submit">Revoke / Deny</button>
+                    <form method="post" action="/admin/bookings/{{ b.id }}/deny" class="d-inline"
+                          data-confirm="Revoke / cancel booking #{{ b.id }} for {{ b.user_name }}? An email notification will be sent to the user.">
+                        <button class="btn btn-sm btn-outline-danger" type="submit">Revoke / Cancel</button>
                     </form>
                 </td>
             </tr>
@@ -122,7 +140,7 @@
 {% else %}
 <div class="table-responsive mb-4">
     <table class="table table-sm table-secondary align-middle mb-0">
-        <thead><tr><th>#</th><th>Device</th><th>User</th><th>Dates</th><th>Hours</th><th>Action</th></tr></thead>
+        <thead><tr><th>#</th><th>Device / Channel</th><th>User</th><th>Dates</th><th>Hours</th><th>Action</th></tr></thead>
         <tbody>
             {% for b in denied %}
             <tr>
@@ -157,48 +175,93 @@
 
 <hr class="my-4">
 
-{% if is_full_admin %}
 <!-- --------------------------------------------------------------------- -->
-<!-- Lab Devices Management (General Devices apart from Potentiostats)     -->
+<!-- General Lab Devices (Status for Manager+Admin; Add/Rename/Delete Admin) -->
 <!-- --------------------------------------------------------------------- -->
 <div class="card p-4 mb-4">
-    <h5 class="mb-2">🔬 General Lab Devices List</h5>
+    <h5 class="mb-2">🔬 General Lab Devices</h5>
     <p class="text-muted small mb-3">
-        Devices listed here appear in the <strong>General Lab Devices</strong> section of the booking dropdown and on the <strong>Devices Schedule</strong> calendar.
+        {% if is_full_admin %}
+            Add, rename, remove, or mark devices as <strong>Available</strong>, <strong>Down for Service</strong>, or <strong>Broken</strong>. Renaming updates existing bookings automatically.
+        {% else %}
+            Mark devices as <strong>Available</strong>, <strong>Down for Service</strong>, or <strong>Broken</strong> so lab members see the status when booking.
+        {% endif %}
     </p>
+
+    {% if is_full_admin %}
     <form method="post" action="/admin/devices/create" class="d-flex gap-2 mb-3" style="max-width: 520px;">
         <input type="text" class="form-control form-control-sm" name="name" required maxlength="120"
                placeholder="e.g. XRD Machine, Fume Hood 2, Rig A">
         <button type="submit" class="btn btn-sm btn-success text-nowrap">➕ Add Device</button>
     </form>
+    {% endif %}
 
     {% if not devices %}
         <div class="alert alert-secondary mb-0 py-2 small">No general devices added yet.</div>
     {% else %}
-        <div class="d-flex flex-wrap gap-2">
-            {% for d in devices %}
-            <div class="border rounded px-3 py-1 bg-light d-flex align-items-center gap-2">
-                <span class="fw-semibold">{{ d.name }}</span>
-                <form method="post" action="/admin/devices/{{ d.id }}/delete" class="d-inline mb-0"
-                      data-confirm="Remove device {{ d.name }} from the dropdown list? Existing bookings remain intact.">
-                    <button type="submit" class="btn btn-sm btn-outline-danger py-0 px-2" title="Remove device">&times;</button>
-                </form>
-            </div>
-            {% endfor %}
-        </div>
+    <div class="table-responsive">
+        <table class="table table-sm align-middle mb-0">
+            <thead>
+                <tr>
+                    <th>Device Name</th>
+                    <th>Status (Service / Broken)</th>
+                    {% if is_full_admin %}<th>Action</th>{% endif %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for d in devices %}
+                <tr>
+                    <td>
+                        {% if is_full_admin %}
+                        <form method="post" action="/admin/devices/{{ d.id }}/rename" class="d-flex gap-2 align-items-center" style="max-width: 340px;">
+                            <input type="text" class="form-control form-control-sm fw-semibold" name="new_name"
+                                   value="{{ d.name }}" required maxlength="120">
+                            <button type="submit" class="btn btn-sm btn-outline-primary text-nowrap">Rename</button>
+                        </form>
+                        {% else %}
+                        <strong>{{ d.name }}</strong>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <form method="post" action="/admin/devices/{{ d.id }}/status" class="d-flex gap-2 align-items-center" style="max-width: 280px;">
+                            <select class="form-select form-select-sm" name="status_value">
+                                <option value="available" {% if d.status == 'available' %}selected{% endif %}>✅ Available</option>
+                                <option value="service" {% if d.status == 'service' %}selected{% endif %}>🔧 Down for Service</option>
+                                <option value="broken" {% if d.status == 'broken' %}selected{% endif %}>❌ Broken</option>
+                            </select>
+                            <button type="submit" class="btn btn-sm btn-outline-secondary text-nowrap">Set</button>
+                        </form>
+                    </td>
+                    {% if is_full_admin %}
+                    <td>
+                        <form method="post" action="/admin/devices/{{ d.id }}/delete" class="d-inline mb-0"
+                              data-confirm="Remove device {{ d.name }} from the dropdown list? Existing bookings remain intact.">
+                            <button type="submit" class="btn btn-sm btn-outline-danger">Remove</button>
+                        </form>
+                    </td>
+                    {% endif %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
     {% endif %}
 </div>
 
 <!-- --------------------------------------------------------------------- -->
-<!-- Potentiostats & Channels Management (2 Channel Categories)            -->
+<!-- Potentiostats & Channels (Status for Manager+Admin; Full Edit Admin)  -->
 <!-- --------------------------------------------------------------------- -->
 <div class="card p-4 mb-4 border-primary">
-    <h5 class="mb-2 text-primary">⚡ Potentiostats &amp; Channels Management</h5>
+    <h5 class="mb-2 text-primary">⚡ Potentiostats &amp; Channels</h5>
     <p class="text-muted small mb-3">
-        Potentiostats appear in the main booking dropdown; selecting one opens its channel list separated into 2 categories.
-        Potentiostat bookings appear on their own dedicated <strong>⚡ Potentiostats</strong> calendar tab.
+        {% if is_full_admin %}
+            Manage Potentiostats, rename units/channels, assign channels to the 2 categories, or mark any unit/channel as Down for Service or Broken.
+        {% else %}
+            Mark any Potentiostat or individual channel as <strong>Available</strong>, <strong>Down for Service</strong>, or <strong>Broken</strong>.
+        {% endif %}
     </p>
 
+    {% if is_full_admin %}
     <!-- Configure the 2 Channel Category Names -->
     <form method="post" action="/admin/potentiostats/categories" class="p-3 bg-light rounded border mb-4">
         <div class="small fw-semibold text-muted mb-2">Channel Category Names (2 Categories)</div>
@@ -225,26 +288,53 @@
                placeholder="New Potentiostat Name (e.g. BioLogic VSP-300, Gamry 1)">
         <button type="submit" class="btn btn-sm btn-primary text-nowrap">➕ Add Potentiostat</button>
     </form>
+    {% endif %}
 
     {% if not potentiostats %}
-        <div class="alert alert-secondary mb-0 py-2 small">No potentiostats added yet. Add a potentiostat above, then add its channels in Category 1 or Category 2.</div>
+        <div class="alert alert-secondary mb-0 py-2 small">No potentiostats added yet.</div>
     {% else %}
         <div class="d-flex flex-column gap-3">
             {% for p in potentiostats %}
             <div class="border rounded p-3 bg-white">
-                <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">
-                    <h6 class="mb-0 fw-bold">⚡ {{ p.name }} <span class="badge bg-light text-dark border ms-1">{{ p.channels|length }} channel(s)</span></h6>
-                    <form method="post" action="/admin/potentiostats/{{ p.id }}/delete" class="d-inline mb-0"
-                          data-confirm="Remove potentiostat {{ p.name }} and all its channels? Existing bookings remain intact.">
-                        <button type="submit" class="btn btn-sm btn-outline-danger py-0 px-2">Remove Potentiostat</button>
-                    </form>
+                <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+                    <div class="d-flex align-items-center flex-wrap gap-2">
+                        {% if is_full_admin %}
+                        <form method="post" action="/admin/potentiostats/{{ p.id }}/rename" class="d-flex gap-2 align-items-center mb-0">
+                            <span class="fw-bold">⚡</span>
+                            <input type="text" class="form-control form-control-sm fw-bold" name="new_name"
+                                   value="{{ p.name }}" required maxlength="120" style="width: 220px;">
+                            <button type="submit" class="btn btn-sm btn-outline-primary text-nowrap">Rename</button>
+                        </form>
+                        {% else %}
+                        <h6 class="mb-0 fw-bold">⚡ {{ p.name }}</h6>
+                        {% endif %}
+                        <span class="badge bg-light text-dark border">{{ p.channels|length }} channel(s)</span>
+                    </div>
+
+                    <div class="d-flex align-items-center flex-wrap gap-2">
+                        <form method="post" action="/admin/potentiostats/{{ p.id }}/status" class="d-flex gap-1 align-items-center mb-0">
+                            <select class="form-select form-select-sm" name="status_value" style="width: 175px;">
+                                <option value="available" {% if p.status == 'available' %}selected{% endif %}>✅ Unit Available</option>
+                                <option value="service" {% if p.status == 'service' %}selected{% endif %}>🔧 Down for Service</option>
+                                <option value="broken" {% if p.status == 'broken' %}selected{% endif %}>❌ Unit Broken</option>
+                            </select>
+                            <button type="submit" class="btn btn-sm btn-outline-secondary">Set</button>
+                        </form>
+                        {% if is_full_admin %}
+                        <form method="post" action="/admin/potentiostats/{{ p.id }}/delete" class="d-inline mb-0"
+                              data-confirm="Remove potentiostat {{ p.name }} and all its channels? Existing bookings remain intact.">
+                            <button type="submit" class="btn btn-sm btn-outline-danger">Remove Unit</button>
+                        </form>
+                        {% endif %}
+                    </div>
                 </div>
 
-                <!-- Add Channel Form for this Potentiostat -->
+                {% if is_full_admin %}
+                <!-- Add Channel Form -->
                 <form method="post" action="/admin/potentiostats/{{ p.id }}/channels/create" class="row g-2 align-items-center mb-3">
                     <div class="col-md-5">
                         <input type="text" class="form-control form-control-sm" name="channel_name" required maxlength="80"
-                               placeholder="Channel name (e.g. Channel 1, Ch 2)">
+                               placeholder="New channel name (e.g. Channel 1, Ch 2)">
                     </div>
                     <div class="col-md-4">
                         <select class="form-select form-select-sm" name="category">
@@ -256,50 +346,66 @@
                         <button type="submit" class="btn btn-sm btn-success w-100">➕ Add Channel</button>
                     </div>
                 </form>
+                {% endif %}
 
-                <!-- 2-Column Channel List by Category -->
-                <div class="row g-3">
-                    <div class="col-md-6">
-                        <div class="p-2 bg-light rounded border h-100">
-                            <div class="small fw-bold text-primary mb-2">{{ pot_cat_labels['1'] }}</div>
-                            {% set cat1_ch = p.channels | selectattr('category', 'equalto', '1') | list %}
-                            {% if not cat1_ch %}
-                                <div class="small text-muted fst-italic">No channels yet.</div>
-                            {% else %}
-                                <div class="d-flex flex-wrap gap-2">
-                                    {% for ch in cat1_ch %}
-                                    <div class="border rounded px-2 py-1 bg-white d-flex align-items-center gap-2 small">
-                                        <span>{{ ch.name }}</span>
-                                        <form method="post" action="/admin/potentiostats/channels/{{ ch.id }}/delete" class="d-inline mb-0">
-                                            <button type="submit" class="btn btn-sm btn-outline-danger py-0 px-1" style="line-height:1;" title="Remove channel">&times;</button>
-                                        </form>
-                                    </div>
-                                    {% endfor %}
-                                </div>
-                            {% endif %}
-                        </div>
-                    </div>
-                    <div class="col-md-6">
-                        <div class="p-2 bg-light rounded border h-100">
-                            <div class="small fw-bold text-success mb-2">{{ pot_cat_labels['2'] }}</div>
-                            {% set cat2_ch = p.channels | selectattr('category', 'equalto', '2') | list %}
-                            {% if not cat2_ch %}
-                                <div class="small text-muted fst-italic">No channels yet.</div>
-                            {% else %}
-                                <div class="d-flex flex-wrap gap-2">
-                                    {% for ch in cat2_ch %}
-                                    <div class="border rounded px-2 py-1 bg-white d-flex align-items-center gap-2 small">
-                                        <span>{{ ch.name }}</span>
-                                        <form method="post" action="/admin/potentiostats/channels/{{ ch.id }}/delete" class="d-inline mb-0">
-                                            <button type="submit" class="btn btn-sm btn-outline-danger py-0 px-1" style="line-height:1;" title="Remove channel">&times;</button>
-                                        </form>
-                                    </div>
-                                    {% endfor %}
-                                </div>
-                            {% endif %}
-                        </div>
-                    </div>
+                <!-- Channels Table (Rename + Status + Delete) -->
+                {% if not p.channels %}
+                    <div class="small text-muted fst-italic">No channels added yet.</div>
+                {% else %}
+                <div class="table-responsive">
+                    <table class="table table-sm align-middle mb-0">
+                        <thead>
+                            <tr>
+                                <th>Channel &amp; Category</th>
+                                <th>Channel Status</th>
+                                {% if is_full_admin %}<th>Action</th>{% endif %}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for ch in p.channels %}
+                            <tr>
+                                <td>
+                                    {% if is_full_admin %}
+                                    <form method="post" action="/admin/potentiostats/channels/{{ ch.id }}/rename" class="d-flex flex-wrap gap-2 align-items-center mb-0">
+                                        <input type="text" class="form-control form-control-sm" name="new_name"
+                                               value="{{ ch.name }}" required maxlength="80" style="width: 160px;">
+                                        <select class="form-select form-select-sm" name="category" style="width: 190px;">
+                                            <option value="1" {% if ch.category == '1' %}selected{% endif %}>{{ pot_cat_labels['1'] }}</option>
+                                            <option value="2" {% if ch.category == '2' %}selected{% endif %}>{{ pot_cat_labels['2'] }}</option>
+                                        </select>
+                                        <button type="submit" class="btn btn-sm btn-outline-primary">Save</button>
+                                    </form>
+                                    {% else %}
+                                    <strong>{{ ch.name }}</strong>
+                                    <span class="badge {% if ch.category == '1' %}bg-primary{% else %}bg-success{% endif %} ms-1">
+                                        {{ pot_cat_labels[ch.category] }}
+                                    </span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    <form method="post" action="/admin/potentiostats/channels/{{ ch.id }}/status" class="d-flex gap-1 align-items-center mb-0">
+                                        <select class="form-select form-select-sm" name="status_value" style="width: 175px;">
+                                            <option value="available" {% if ch.status == 'available' %}selected{% endif %}>✅ Available</option>
+                                            <option value="service" {% if ch.status == 'service' %}selected{% endif %}>🔧 Down for Service</option>
+                                            <option value="broken" {% if ch.status == 'broken' %}selected{% endif %}>❌ Broken</option>
+                                        </select>
+                                        <button type="submit" class="btn btn-sm btn-outline-secondary">Set</button>
+                                    </form>
+                                </td>
+                                {% if is_full_admin %}
+                                <td>
+                                    <form method="post" action="/admin/potentiostats/channels/{{ ch.id }}/delete" class="d-inline mb-0"
+                                          data-confirm="Remove channel {{ ch.name }} from {{ p.name }}?">
+                                        <button type="submit" class="btn btn-sm btn-outline-danger">Remove</button>
+                                    </form>
+                                </td>
+                                {% endif %}
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
                 </div>
+                {% endif %}
             </div>
             {% endfor %}
         </div>
@@ -307,25 +413,26 @@
 </div>
 
 <!-- --------------------------------------------------------------------- -->
-<!-- Schedule Collision Notification Email & Lab Users Management          -->
+<!-- Schedule Collision Notification Email (Admin) & Add Lab User          -->
 <!-- --------------------------------------------------------------------- -->
 <div class="row g-4 mt-1">
+    {% if is_full_admin %}
     <div class="col-lg-6">
         <div class="card p-4 h-100">
-            <h5 class="mb-2">📧 Schedule Collision Email Notification</h5>
+            <h5 class="mb-2">📧 Email Notifications &amp; Outgoing SMTP</h5>
             <p class="text-muted small mb-3">
-                Set who receives an email alert when a schedule collision occurs, plus the outgoing SMTP account that sends the email.
+                Set who receives collision / &gt;3-channel alerts, and configure the outgoing SMTP server used for both manager alerts and user approval/cancellation emails.
             </p>
 
             {% if notif_cfg.notify_email_to and not notif_cfg.smtp_host %}
             <div class="alert alert-warning small py-2">
-                <strong>Outgoing SMTP server is not configured yet!</strong> Entering a recipient email alone cannot send emails until you also fill in the <em>Outgoing SMTP Server Settings</em> below (e.g., Gmail: <code>smtp.gmail.com</code>, port <code>587</code>, your Gmail address, and a 16-character Google App Password).
+                <strong>Outgoing SMTP server is not configured yet!</strong> Fill in the <em>Outgoing SMTP Server Settings</em> below (e.g., Gmail: <code>smtp.gmail.com</code>, port <code>587</code>, your Gmail address, and a 16-character Google App Password).
             </div>
             {% endif %}
 
             <form method="post" action="/admin/notifications">
                 <div class="mb-3">
-                    <label class="form-label">Recipient Email Address(es)</label>
+                    <label class="form-label">Manager / Admin Alert Email(s)</label>
                     <input type="text" class="form-control" name="notify_email_to"
                            placeholder="e.g. lab-admin@technion.ac.il (comma-separated for multiple)"
                            value="{{ notif_cfg.notify_email_to or '' }}">
@@ -381,21 +488,24 @@
             </form>
         </div>
     </div>
-{% else %}
-<div class="row g-4 mt-1">
-{% endif %}
+    {% endif %}
 
     <div class="col-lg-6">
         <div class="card p-4 h-100">
             <h5 class="mb-2">👥 Add Lab User</h5>
             <p class="text-muted small mb-3">
-                Create a login account for a lab member with a default password. All registered users also appear in the <strong>Your Name</strong> dropdown on the booking form.
+                Create a login account for a lab member with an email address (used for approval/revocation/cancellation notifications) and a default password.
             </p>
             <form method="post" action="/admin/users/create">
                 <div class="mb-3">
                     <label class="form-label">Username / Lab Member Name</label>
                     <input type="text" class="form-control" name="username" required maxlength="120"
                            placeholder="e.g. rotem or David Cohen">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Email Address</label>
+                    <input type="email" class="form-control" name="email" maxlength="255"
+                           placeholder="e.g. david@campus.technion.ac.il">
                 </div>
                 <div class="mb-3">
                     <label class="form-label">Default Password</label>
@@ -419,7 +529,8 @@
             <tr>
                 <th>Username</th>
                 <th>Role</th>
-                <th>Reset to New Default Password</th>
+                <th>Email Address</th>
+                <th>Reset Password</th>
                 <th>Action</th>
             </tr>
         </thead>
@@ -435,11 +546,22 @@
                     {% endif %}
                 </td>
                 <td>
+                    {% if is_full_admin or not u.is_manager or u.username == actor_username %}
+                    <form method="post" action="/admin/users/{{ u.id }}/update-email" class="d-flex gap-1 align-items-center" style="min-width: 240px;">
+                        <input type="email" class="form-control form-control-sm" name="email" maxlength="255"
+                               placeholder="user@technion.ac.il" value="{{ u.email or '' }}">
+                        <button type="submit" class="btn btn-sm btn-outline-secondary text-nowrap">Save</button>
+                    </form>
+                    {% else %}
+                    <span class="small">{{ u.email or "—" }}</span>
+                    {% endif %}
+                </td>
+                <td>
                     {% if is_full_admin or not u.is_manager %}
-                    <form method="post" action="/admin/users/{{ u.id }}/reset-password" class="d-flex gap-2 align-items-center" style="max-width: 340px;">
+                    <form method="post" action="/admin/users/{{ u.id }}/reset-password" class="d-flex gap-1 align-items-center" style="min-width: 220px;">
                         <input type="text" class="form-control form-control-sm" name="new_password"
-                               placeholder="New default password" required minlength="4">
-                        <button type="submit" class="btn btn-sm btn-outline-primary text-nowrap">Set Password</button>
+                               placeholder="New password" required minlength="4">
+                        <button type="submit" class="btn btn-sm btn-outline-primary text-nowrap">Set</button>
                     </form>
                     {% else %}
                     <span class="text-muted small">Managed by Admin</span>
@@ -458,7 +580,7 @@
                     {% if is_full_admin or not u.is_manager %}
                     <form method="post" action="/admin/users/{{ u.id }}/delete" class="d-inline"
                           data-confirm="Delete user {{ u.username }}?">
-                        <button type="submit" class="btn btn-sm btn-outline-danger">Delete User</button>
+                        <button type="submit" class="btn btn-sm btn-outline-danger">Delete</button>
                     </form>
                     {% endif %}
                 </td>
@@ -484,7 +606,7 @@
             <div class="card-body">
                 <div class="alert alert-warning small mb-3">
                     <strong>Only ONE of these colliding bookings can be booked.</strong>
-                    Pick the winning booking below — your chosen booking will be <strong>Approved</strong> and all other colliding option(s) will be <strong>automatically Denied</strong>.
+                    Pick the winning booking below — your chosen booking will be <strong>Approved</strong> (and the user emailed) and all other colliding option(s) will be <strong>automatically Denied / Revoked</strong> (and those users emailed).
                 </div>
                 <div id="conflictModalOptions" class="d-flex flex-column gap-2"></div>
             </div>

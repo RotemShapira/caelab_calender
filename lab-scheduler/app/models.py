@@ -14,6 +14,12 @@ ALL_STATUSES = (STATUS_PENDING, STATUS_APPROVED, STATUS_DENIED)
 BOOKING_TYPE_DEVICE = "device"
 BOOKING_TYPE_POTENTIOSTAT = "potentiostat"
 
+# Equipment / Channel operational status values
+EQUIP_STATUS_AVAILABLE = "available"
+EQUIP_STATUS_SERVICE = "service"
+EQUIP_STATUS_BROKEN = "broken"
+ALL_EQUIP_STATUSES = (EQUIP_STATUS_AVAILABLE, EQUIP_STATUS_SERVICE, EQUIP_STATUS_BROKEN)
+
 
 class Booking(Base):
     __tablename__ = "bookings"
@@ -77,13 +83,12 @@ class AdminCredential(Base):
 class User(Base):
     """
     Lab member user accounts created and managed by the Admin/Manager from /admin.
-    If `is_manager` is True (set only by the Admin), the user can resolve double
-    bookings, approve/deny requests, manage holidays, and add/remove lab members.
     """
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String(120), nullable=False, unique=True, index=True)
+    email = Column(String(255), nullable=True, default="")
     password_hash = Column(String(255), nullable=False)
     is_manager = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -98,6 +103,7 @@ class Device(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(120), nullable=False, unique=True, index=True)
+    status = Column(String(20), default=EQUIP_STATUS_AVAILABLE, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -110,6 +116,7 @@ class Potentiostat(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(120), nullable=False, unique=True, index=True)
+    status = Column(String(20), default=EQUIP_STATUS_AVAILABLE, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     channels = relationship(
@@ -133,6 +140,7 @@ class PotentiostatChannel(Base):
     potentiostat_id = Column(Integer, ForeignKey("potentiostats.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String(80), nullable=False)
     category = Column(String(20), nullable=False, default="1")  # "1" or "2"
+    status = Column(String(20), default=EQUIP_STATUS_AVAILABLE, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     potentiostat = relationship("Potentiostat", back_populates="channels")
@@ -141,8 +149,6 @@ class PotentiostatChannel(Base):
 class Holiday(Base):
     """
     Holidays shown on the schedule calendars.
-    `is_deleted=True` remembers holidays manually removed by Admin/Manager
-    so future open-calendar imports never re-add them or overwrite edits.
     """
     __tablename__ = "holidays"
 

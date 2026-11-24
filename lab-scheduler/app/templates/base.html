@@ -16,8 +16,8 @@
             <a class="navbar-brand" href="/">🧪 Lab Scheduler</a>
             <div class="navbar-nav me-auto">
                 <a class="nav-link" href="/">New Booking</a>
-                <a class="nav-link" href="/dashboard">Devices Schedule</a>
-                <a class="nav-link" href="/potentiostats">⚡ Potentiostats</a>
+                <a class="nav-link" href="/dashboard">Approved Devices Schedule</a>
+                <a class="nav-link" href="/potentiostats">⚡ Approved Potentiostats Schedule</a>
                 {% if request.state.user and request.state.user.role in ('admin', 'manager') %}
                 <a class="nav-link" href="/history">History</a>
                 <a class="nav-link" href="/admin">{% if request.state.user.role == 'admin' %}Admin{% else %}Manage{% endif %}</a>
@@ -37,7 +37,7 @@
                     {% endif %}
                 </span>
                 {% if request.state.user.role in ('user', 'manager') %}
-                <a class="btn btn-sm btn-outline-light" href="/account">Password</a>
+                <a class="btn btn-sm btn-outline-light" href="/account">Account</a>
                 {% endif %}
                 <form method="post" action="/logout" class="d-inline mb-0">
                     <button type="submit" class="btn btn-sm btn-outline-secondary text-light">Log Out</button>
