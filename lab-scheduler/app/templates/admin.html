@@ -69,12 +69,22 @@
                         </ul>
                     {% endif %}
                     {% if is_pot_limit %}
-                        <div class="small fw-semibold text-warning-emphasis mb-1">⚡ Exceeds 3-channel potentiostat limit:</div>
-                        <ul class="mb-0 ps-3 small">
-                        {% for ob in pot_limit_by_id[b.id] %}
-                            <li>#{{ ob.id }} {{ ob.equipment }} ({{ ob.start_date }}–{{ ob.end_date }}, {{ ob.time_label }}, {{ ob.status }})</li>
-                        {% endfor %}
-                        </ul>
+                        {% set s = pot_overbook_summary[b.id] %}
+                        <div class="p-2 rounded bg-white border border-warning small">
+                            <div class="fw-semibold text-warning-emphasis mb-1">⚡ Potentiostat Overbooking (&gt;3 channels)</div>
+                            <div><strong>User:</strong> {{ s.user_name }}</div>
+                            <div><strong>Date:</strong> {{ s.date_label }} ({{ s.time_label }})</div>
+                            <div class="mt-1">
+                                <strong>Overbooked Channels ({{ s.channels|length }}):</strong>
+                                <div class="d-flex flex-wrap gap-1 mt-1">
+                                    {% for ch in s.channels %}
+                                    <span class="badge {% if ch == s.requested_channel %}bg-warning text-dark border border-dark{% else %}bg-light text-dark border{% endif %}">
+                                        {{ ch }}
+                                    </span>
+                                    {% endfor %}
+                                </div>
+                            </div>
+                        </div>
                     {% endif %}
                     {% if not is_conflict and not is_pot_limit %}
                         <span class="text-muted">none</span>

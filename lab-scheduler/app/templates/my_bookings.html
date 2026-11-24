@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}My Bookings{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+    <div>
+        <h3 class="mb-1">📋 My Bookings</h3>
+        <p class="text-muted mb-0">Showing only bookings created for <strong>{{ username }}</strong>. You can cancel any of your upcoming or pending bookings below.</p>
+    </div>
+    <a href="/" class="btn btn-primary btn-sm">➕ New Booking</a>
+</div>
+
+{% if msg %}
+<div class="alert alert-success">{{ msg }}</div>
+{% endif %}
+{% if err %}
+<div class="alert alert-danger">{{ err }}</div>
+{% endif %}
+
+<h5 class="mt-3">Upcoming &amp; Pending Bookings ({{ active_bookings|length }})</h5>
+{% if not active_bookings %}
+    <div class="alert alert-info">You have no upcoming or pending bookings.</div>
+{% else %}
+<div class="table-responsive mb-4">
+    <table class="table table-hover align-middle mb-0">
+        <thead>
+            <tr>
+                <th>Device / Channel</th>
+                <th>Dates</th>
+                <th>Hours</th>
+                <th>Status</th>
+                <th>Action</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for b in active_bookings %}
+            <tr>
+                <td>
+                    <strong>{{ b.equipment }}</strong>
+                    {% if b.channel_category %}
+                        <span class="badge {% if b.channel_category == '1' %}bg-primary{% else %}bg-success{% endif %} ms-1">
+                            {{ pot_cat_labels[b.channel_category] }}
+                        </span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if b.start_date == b.end_date %}
+                        {{ b.start_date }}
+                    {% else %}
+                        {{ b.start_date }} → {{ b.end_date }}
+                    {% endif %}
+                </td>
+                <td>
+                    {% if b.start_time and b.end_time %}
+                        <span class="badge bg-info text-dark">{{ b.time_label }}</span>
+                    {% else %}
+                        <span class="badge bg-light text-dark border">All Day</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if b.status == 'approved' %}
+                        {% if b.start_date <= today <= b.end_date %}
+                            <span class="badge bg-success">Approved (In Progress)</span>
+                        {% else %}
+                            <span class="badge bg-success">Approved</span>
+                        {% endif %}
+                    {% else %}
+                        <span class="badge bg-warning text-dark">Pending Manager Approval</span>
+                    {% endif %}
+                </td>
+                <td>
+                    <form method="post" action="/my-bookings/{{ b.id }}/cancel" class="d-inline"
+                          data-confirm="Are you sure you intend to cancel your booking for {{ b.equipment }} ({{ b.start_date }}{% if b.start_date != b.end_date %} to {{ b.end_date }}{% endif %}, {{ b.time_label }})? This will free the slot immediately.">
+                        <button type="submit" class="btn btn-sm btn-outline-danger">Cancel Booking</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+{% if past_bookings %}
+<details class="mt-4">
+    <summary class="small text-muted fw-semibold" style="cursor:pointer;">
+        Past Completed Bookings ({{ past_bookings|length }})
+    </summary>
+    <div class="table-responsive mt-2">
+        <table class="table table-sm table-light align-middle mb-0">
+            <thead>
+                <tr>
+                    <th>Device / Channel</th>
+                    <th>Dates</th>
+                    <th>Hours</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for b in past_bookings %}
+                <tr class="text-muted">
+                    <td>{{ b.equipment }}</td>
+                    <td>{{ b.start_date }}{% if b.start_date != b.end_date %} → {{ b.end_date }}{% endif %}</td>
+                    <td>{{ b.time_label }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</details>
+{% endif %}
+{% endblock %}

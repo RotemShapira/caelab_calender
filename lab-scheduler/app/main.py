@@ -835,6 +835,90 @@ def potentiostats_dashboard(
 
 
 # ---------------------------------------------------------------------------
+# Authenticated User: My Bookings (view & cancel own bookings)
+# ---------------------------------------------------------------------------
+@app.get("/my-bookings")
+def my_bookings_page(
+    request: Request,
+    msg: str | None = None,
+    err: str | None = None,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_user),
+):
+    uname = current_user["username"]
+    today = date.today()
+    my_active = (
+        db.query(models.Booking)
+        .filter(
+            models.Booking.user_name == uname,
+            models.Booking.status.in_((models.STATUS_APPROVED, models.STATUS_PENDING)),
+            models.Booking.end_date >= today,
+        )
+        .order_by(models.Booking.start_date, models.Booking.start_time)
+        .all()
+    )
+    my_past = (
+        db.query(models.Booking)
+        .filter(
+            models.Booking.user_name == uname,
+            models.Booking.status == models.STATUS_APPROVED,
+            models.Booking.end_date < today,
+        )
+        .order_by(models.Booking.end_date.desc())
+        .limit(20)
+        .all()
+    )
+    pot_cat_labels = _get_potentiostat_category_labels(db)
+    return templates.TemplateResponse(
+        "my_bookings.html",
+        {
+            "request": request,
+            "username": uname,
+            "active_bookings": my_active,
+            "past_bookings": my_past,
+            "pot_cat_labels": pot_cat_labels,
+            "today": today,
+            "msg": msg,
+            "err": err,
+        },
+    )
+
+
+@app.post("/my-bookings/{booking_id}/cancel")
+def cancel_my_booking(
+    booking_id: int,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_user),
+):
+    booking = db.query(models.Booking).get(booking_id)
+    if not booking:
+        raise HTTPException(status_code=404, detail="Booking not found")
+    if booking.user_name != current_user["username"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only cancel your own bookings.",
+        )
+    if booking.status not in (models.STATUS_APPROVED, models.STATUS_PENDING):
+        return RedirectResponse(
+            url=f"/my-bookings?err={quote_plus('This booking is already cancelled or denied.')}",
+            status_code=303,
+        )
+
+    eq = booking.equipment
+    dates = (
+        booking.start_date.isoformat()
+        if booking.start_date == booking.end_date
+        else f"{booking.start_date.isoformat()} to {booking.end_date.isoformat()}"
+    )
+    booking.status = models.STATUS_DENIED
+    db.commit()
+    return RedirectResponse(
+        url=f"/my-bookings?msg={quote_plus(f'Cancelled your booking for {eq} ({dates}).')}",
+        status_code=303,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Admin: history of completed bookings
 # ---------------------------------------------------------------------------
 @app.get("/history")
@@ -949,6 +1033,31 @@ def admin_panel(
                     unique_group.append(_serialize_booking_for_modal(item))
             conflict_modal_options[str(b.id)] = unique_group
 
+    # Clean summary for >3-channel potentiostat overbookings:
+    # shows ONLY who is overbooking, for what date(s), and which channels are overbooked.
+    pot_overbook_summary: dict[int, dict] = {}
+    for b in pending:
+        if b.id in pot_limit_by_id:
+            all_ch = [b.equipment] + [ob.equipment for ob in pot_limit_by_id[b.id]]
+            unique_channels: list[str] = []
+            seen_ch: set[str] = set()
+            for ch in all_ch:
+                if ch not in seen_ch:
+                    seen_ch.add(ch)
+                    unique_channels.append(ch)
+            date_str = (
+                b.start_date.isoformat()
+                if b.start_date == b.end_date
+                else f"{b.start_date.isoformat()} → {b.end_date.isoformat()}"
+            )
+            pot_overbook_summary[b.id] = {
+                "user_name": b.user_name,
+                "date_label": date_str,
+                "time_label": b.time_label,
+                "requested_channel": b.equipment,
+                "channels": unique_channels,
+            }
+
     users = db.query(User).order_by(User.username).all()
     devices = db.query(Device).order_by(Device.name).all()
     potentiostats = _get_potentiostats_payload(db)
@@ -964,6 +1073,7 @@ def admin_panel(
             "denied": denied,
             "conflicts_by_id": conflicts_by_id,
             "pot_limit_by_id": pot_limit_by_id,
+            "pot_overbook_summary": pot_overbook_summary,
             "denied_conflicts_by_id": denied_conflicts_by_id,
             "conflict_modal_options": conflict_modal_options,
             "users": users,
