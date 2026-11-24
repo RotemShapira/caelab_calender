@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import re
@@ -6,15 +7,15 @@ import secrets
 from datetime import date, datetime, timedelta
 from urllib.parse import quote_plus
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, status
-from fastapi.responses import RedirectResponse
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
+from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from . import cleanup, conflict, holidays, models, notifications, schemas
+from . import backup, cleanup, conflict, holidays, models, notifications, schemas
 from .auth import (
     LoginRequiredException,
     PasswordChangeRequiredException,
@@ -1350,6 +1351,72 @@ def admin_test_notification(
     ok, detail = notifications.send_test_email(db)
     param = "msg" if ok else "err"
     return RedirectResponse(url=f"/admin?{param}={quote_plus(detail)}", status_code=303)
+
+
+@app.get("/admin/data/export")
+def admin_export_data(
+    db: Session = Depends(get_db),
+    _admin: str = Depends(require_admin),
+):
+    data = backup.export_backup_dict(db)
+    payload = json.dumps(data, indent=2, ensure_ascii=False)
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    filename = f"lab-scheduler-backup-{ts}.json"
+    return Response(
+        content=payload.encode("utf-8"),
+        media_type="application/json; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@app.post("/admin/data/import")
+async def admin_import_data(
+    backup_file: UploadFile = File(...),
+    import_mode: str = Form("replace"),
+    db: Session = Depends(get_db),
+    _admin: str = Depends(require_admin),
+):
+    raw_bytes = await backup_file.read(backup.MAX_IMPORT_BYTES + 1)
+    if len(raw_bytes) > backup.MAX_IMPORT_BYTES:
+        return RedirectResponse(
+            url=f"/admin?err={quote_plus('Backup file is too large (maximum 25 MB).')}",
+            status_code=303,
+        )
+    try:
+        parsed = backup.validate_and_parse_backup(raw_bytes)
+    except ValueError as exc:
+        return RedirectResponse(
+            url=f"/admin?err={quote_plus(str(exc))}",
+            status_code=303,
+        )
+
+    mode = "merge" if import_mode.strip().lower() == "merge" else "replace"
+    try:
+        counts = backup.import_backup_dict(db, parsed, mode=mode)
+    except Exception as exc:
+        logger.exception("Data import failed.")
+        return RedirectResponse(
+            url=f"/admin?err={quote_plus(f'Import failed (database left unchanged): {exc}')}",
+            status_code=303,
+        )
+
+    mode_label = "Replaced lab data with" if mode == "replace" else "Merged"
+    summary = (
+        f"{mode_label} backup: "
+        f"{counts['devices']} device(s), "
+        f"{counts['potentiostats']} potentiostat(s) ({counts['channels']} channel(s)), "
+        f"{counts['users']} user(s), "
+        f"{counts['bookings']} booking(s), "
+        f"{counts['holidays']} holiday(s), "
+        f"{counts['settings']} setting(s)."
+    )
+    return RedirectResponse(
+        url=f"/admin?msg={quote_plus(summary)}",
+        status_code=303,
+    )
 
 
 @app.post("/admin/devices/create")

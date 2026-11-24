@@ -601,6 +601,66 @@
 </div>
 {% endif %}
 
+{% if is_full_admin %}
+<!-- --------------------------------------------------------------------- -->
+<!-- Export / Import Lab Data (Backup & Migration to a New Machine)        -->
+<!-- --------------------------------------------------------------------- -->
+<div class="card p-4 mt-4 border-primary">
+    <h5 class="mb-1">💾 Export &amp; Import Lab Data (Backup / Migration)</h5>
+    <p class="text-muted small mb-3">
+        Download a complete portable backup of your lab data and import it onto a new Lab Scheduler installation or machine after setup.
+    </p>
+    <div class="row g-4">
+        <div class="col-md-6">
+            <div class="p-3 bg-light rounded border h-100 d-flex flex-column justify-content-between">
+                <div>
+                    <h6 class="mb-2">⬇️ Export Data</h6>
+                    <p class="small text-muted mb-2">
+                        Exports a single portable <code>.json</code> file containing:
+                    </p>
+                    <ul class="small text-muted ps-3 mb-3">
+                        <li>All General Devices, Potentiostats, Channels &amp; their statuses</li>
+                        <li>All Lab Users (including emails, roles, and password hashes)</li>
+                        <li>All Bookings (approved, pending, denied, and confirmation status)</li>
+                        <li>All Holidays &amp; Email/Category settings</li>
+                    </ul>
+                    <div class="alert alert-warning py-1 px-2 small mb-3">
+                        🔒 <strong>Keep this file private:</strong> it contains user password hashes and SMTP settings.
+                    </div>
+                </div>
+                <div>
+                    <a href="/admin/data/export" class="btn btn-primary btn-sm">⬇️ Download Lab Data Export (.json)</a>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-6">
+            <div class="p-3 bg-light rounded border h-100">
+                <h6 class="mb-2">⬆️ Import Data</h6>
+                <p class="small text-muted mb-3">
+                    Upload a <code>.json</code> file exported from another Lab Scheduler instance. Your current Admin login and session secret on this machine are always preserved.
+                </p>
+                <form method="post" action="/admin/data/import" enctype="multipart/form-data"
+                      data-confirm="Import this backup file into Lab Scheduler? If 'Replace all lab data' is selected, current devices, users, bookings, and holidays on this server will be replaced by the backup.">
+                    <div class="mb-3">
+                        <label class="form-label small fw-semibold mb-1">Backup File (.json)</label>
+                        <input type="file" class="form-control form-control-sm" name="backup_file"
+                               accept=".json,application/json" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label small fw-semibold mb-1">Import Mode</label>
+                        <select class="form-select form-select-sm" name="import_mode">
+                            <option value="replace" selected>Replace all lab data (recommended for new installation)</option>
+                            <option value="merge">Merge — keep existing records and add missing ones</option>
+                        </select>
+                    </div>
+                    <button type="submit" class="btn btn-success btn-sm">⬆️ Import Backup File</button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
 <!-- --------------------------------------------------------------------- -->
 <!-- Interactive Conflict Resolution Modal Popup (Zero External JS Deps)   -->
 <!-- --------------------------------------------------------------------- -->
