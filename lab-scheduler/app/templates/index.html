@@ -220,6 +220,30 @@
     </div>
 </div>
 
+<!-- Double-Booking / Overbooking Pre-Submission Confirmation Modal -->
+<div id="confirmSubmitModalBackdrop" class="d-none"
+     style="position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:1060;display:flex;align-items:center;justify-content:center;padding:1rem;">
+    <div class="card shadow-lg border-warning" style="max-width:560px;width:100%;">
+        <div class="card-header bg-warning text-dark d-flex justify-content-between align-items-center">
+            <strong class="mb-0">⚠️ Confirm Submission to Lab Manager</strong>
+            <button type="button" class="btn-close" id="closeConfirmSubmitModalBtn" aria-label="Close"></button>
+        </div>
+        <div class="card-body">
+            <p class="mb-2" id="confirmSubmitModalIntro">
+                Your booking request triggers a conflict or channel limit and will be sent to the <strong>Lab Manager / Admin</strong> for approval instead of being auto-approved.
+            </p>
+            <div id="confirmSubmitModalReasons" class="small mb-3"></div>
+            <p class="small text-muted mb-0">
+                Do you still want to submit this request to the Lab Manager?
+            </p>
+        </div>
+        <div class="card-footer bg-light d-flex justify-content-end gap-2">
+            <button type="button" class="btn btn-outline-secondary" id="cancelConfirmSubmitBtn">Cancel</button>
+            <button type="button" class="btn btn-warning fw-semibold" id="proceedConfirmSubmitBtn">✅ Yes, Send to Lab Manager</button>
+        </div>
+    </div>
+</div>
+
 <script>
 const DEVICES = {{ devices_payload | tojson }};
 const POTENTIOSTATS = {{ potentiostats | tojson }};
@@ -259,7 +283,13 @@ const startDateInput = document.getElementById("startDateInput");
 const startTimeInput = document.getElementById("startTimeInput");
 const endDateInput = document.getElementById("endDateInput");
 const endTimeInput = document.getElementById("endTimeInput");
+const bookingForm = document.getElementById("bookingForm");
 const submitBookingBtn = document.getElementById("submitBookingBtn");
+const confirmSubmitModalBackdrop = document.getElementById("confirmSubmitModalBackdrop");
+const confirmSubmitModalReasons = document.getElementById("confirmSubmitModalReasons");
+const closeConfirmSubmitModalBtn = document.getElementById("closeConfirmSubmitModalBtn");
+const cancelConfirmSubmitBtn = document.getElementById("cancelConfirmSubmitBtn");
+const proceedConfirmSubmitBtn = document.getElementById("proceedConfirmSubmitBtn");
 
 const MONTH_NAMES = ["January","February","March","April","May","June",
                       "July","August","September","October","November","December"];
@@ -267,6 +297,8 @@ const HOLIDAYS_CACHE = {};
 
 let activeCategory = null; // "device" | "potentiostat"
 let activeBookings = [];
+let userPotBookings = [];
+let confirmedConflictSubmit = false;
 let viewYear, viewMonth;
 let clickedDateISO = null;
 
@@ -402,6 +434,20 @@ async function ensureHolidaysLoaded(year) {
     return HOLIDAYS_CACHE[year];
 }
 
+async function loadUserPotentiostatBookings() {
+    if (activeCategory !== "potentiostat") {
+        userPotBookings = [];
+        return;
+    }
+    const uname = userNameSelect.value || "";
+    try {
+        const res = await fetch(`/api/user-potentiostat-bookings?user_name=${encodeURIComponent(uname)}`);
+        userPotBookings = res.ok ? await res.json() : [];
+    } catch (e) {
+        userPotBookings = [];
+    }
+}
+
 async function loadBookingsAndRenderCalendar() {
     updateEquipStatusBanner();
     const names = getSelectedEquipmentNames();
@@ -419,8 +465,11 @@ async function loadBookingsAndRenderCalendar() {
     const params = new URLSearchParams();
     names.forEach(n => params.append("equipment", n));
     try {
-        const res = await fetch(`/api/equipment-bookings?${params.toString()}`);
-        activeBookings = res.ok ? await res.json() : [];
+        const [eqRes] = await Promise.all([
+            fetch(`/api/equipment-bookings?${params.toString()}`),
+            loadUserPotentiostatBookings(),
+        ]);
+        activeBookings = eqRes.ok ? await eqRes.json() : [];
     } catch (e) {
         activeBookings = [];
     }
@@ -663,25 +712,19 @@ function handleStartHourClick(dateISO, hour) {
     endTimeInput.focus();
 }
 
-function updateConflictBanner() {
+function analyzeSubmissionConflicts() {
     const sd = startDateInput.value;
     const ed = endDateInput.value;
     if (!sd || !ed) {
-        liveConflictWarning.classList.add("d-none");
-        return;
+        return { invalid: false, empty: true, overlapping: [], potOverbookPeak: 0, potOverlappingExisting: [], selectedNames: [] };
     }
     const isAllDay = !useHoursInput.value;
     const sm = isAllDay ? 0 : timeToMin(startTimeInput.value, 0);
     const em = isAllDay ? 1440 : timeToMin(endTimeInput.value, 1440);
 
     if (comparePoint(sd, sm, ed, em) >= 0) {
-        liveConflictWarning.className = "alert alert-danger small py-2";
-        liveConflictWarning.textContent = "End date & time must be after start date & time.";
-        liveConflictWarning.classList.remove("d-none");
-        submitBookingBtn.disabled = true;
-        return;
+        return { invalid: true, empty: false, overlapping: [], potOverbookPeak: 0, potOverlappingExisting: [], selectedNames: [] };
     }
-    submitBookingBtn.disabled = false;
 
     const overlapping = activeBookings.filter(b => {
         const bsMin = timeToMin(b.start_time, 0);
@@ -690,24 +733,91 @@ function updateConflictBanner() {
                comparePoint(ed, em, b.start_date, bsMin) > 0;
     });
 
+    const selectedNames = getSelectedEquipmentNames();
+    let potOverbookPeak = 0;
+    let potOverlappingExisting = [];
+
+    if (activeCategory === "potentiostat" && selectedNames.length > 0) {
+        potOverlappingExisting = userPotBookings.filter(b => {
+            const bsMin = timeToMin(b.start_time, 0);
+            const beMin = timeToMin(b.end_time, 1440);
+            return comparePoint(sd, sm, b.end_date, beMin) < 0 &&
+                   comparePoint(ed, em, b.start_date, bsMin) > 0;
+        });
+
+        // Sweep-line over the requested window [sd, sm) .. [ed, em)
+        // End events (-1) sort before start events (+1) at identical timestamps
+        // so back-to-back bookings do not count as concurrent.
+        const events = [
+            { date: sd, min: sm, delta: selectedNames.length },
+            { date: ed, min: em, delta: -selectedNames.length },
+        ];
+        potOverlappingExisting.forEach(b => {
+            const bsMin = timeToMin(b.start_time, 0);
+            const beMin = timeToMin(b.end_time, 1440);
+            const clampedStart = comparePoint(b.start_date, bsMin, sd, sm) > 0
+                ? { date: b.start_date, min: bsMin }
+                : { date: sd, min: sm };
+            const clampedEnd = comparePoint(b.end_date, beMin, ed, em) < 0
+                ? { date: b.end_date, min: beMin }
+                : { date: ed, min: em };
+            if (comparePoint(clampedStart.date, clampedStart.min, clampedEnd.date, clampedEnd.min) < 0) {
+                events.push({ date: clampedStart.date, min: clampedStart.min, delta: 1 });
+                events.push({ date: clampedEnd.date, min: clampedEnd.min, delta: -1 });
+            }
+        });
+        events.sort((a, b) => {
+            const cmp = comparePoint(a.date, a.min, b.date, b.min);
+            if (cmp !== 0) return cmp;
+            return a.delta - b.delta; // negative (end) before positive (start)
+        });
+        let running = 0;
+        for (const ev of events) {
+            running += ev.delta;
+            if (running > potOverbookPeak) potOverbookPeak = running;
+        }
+    }
+
+    return {
+        invalid: false,
+        empty: false,
+        overlapping,
+        potOverbookPeak,
+        potOverlappingExisting,
+        selectedNames,
+    };
+}
+
+function updateConflictBanner() {
+    const analysis = analyzeSubmissionConflicts();
+    if (analysis.empty) {
+        liveConflictWarning.classList.add("d-none");
+        return;
+    }
+    if (analysis.invalid) {
+        liveConflictWarning.className = "alert alert-danger small py-2";
+        liveConflictWarning.textContent = "End date & time must be after start date & time.";
+        liveConflictWarning.classList.remove("d-none");
+        submitBookingBtn.disabled = true;
+        return;
+    }
+    submitBookingBtn.disabled = false;
+
     const warnings = [];
-    if (overlapping.length > 0) {
-        const summary = overlapping
+    if (analysis.overlapping.length > 0) {
+        const summary = analysis.overlapping
             .map(b => `${b.user_name} (${b.equipment}: ${b.start_date} ${b.start_time || 'All Day'} → ${b.end_date} ${b.end_time || ''})`)
             .join("; ");
         warnings.push(
-            `<strong>⚠️ Overlap Detected:</strong> Overlaps existing booking(s): ${escapeHtml(summary)}. ` +
+            `<strong>⚠️ Double-Booking Detected:</strong> Overlaps existing booking(s): ${escapeHtml(summary)}. ` +
             `Submitting will send your request to the <strong>Lab Manager / Admin</strong> for approval.`
         );
     }
-    if (activeCategory === "potentiostat") {
-        const checkedCount = document.querySelectorAll('input[name="channel_ids"]:checked').length;
-        if (checkedCount > 3) {
-            warnings.push(
-                `<strong>⚠️ 3-Channel Limit:</strong> You selected ${checkedCount} potentiostat channels. ` +
-                `Channels beyond the 3-channel per-user limit will be sent to the <strong>Lab Manager / Admin</strong> for approval.`
-            );
-        }
+    if (analysis.potOverbookPeak > 3) {
+        warnings.push(
+            `<strong>⚠️ Potentiostat 3-Channel Limit Exceeded:</strong> This booking gives you <strong>${analysis.potOverbookPeak} concurrent potentiostat channels</strong> ` +
+            `(limit is 3 per user). Requests beyond 3 channels will be sent to the <strong>Lab Manager / Admin</strong> for approval.`
+        );
     }
 
     if (warnings.length) {
@@ -718,6 +828,71 @@ function updateConflictBanner() {
         liveConflictWarning.classList.add("d-none");
     }
 }
+
+function openConfirmSubmitModal(analysis) {
+    const blocks = [];
+    if (analysis.overlapping.length > 0) {
+        const items = analysis.overlapping.map(b =>
+            `<li><strong>${escapeHtml(b.equipment)}</strong> — booked by <strong>${escapeHtml(b.user_name)}</strong> (${escapeHtml(b.start_date)} ${escapeHtml(b.time_label)})</li>`
+        ).join("");
+        blocks.push(
+            `<div class="alert alert-danger py-2 mb-2">` +
+            `<div class="fw-bold mb-1">⚠️ Double-Booking Overlap:</div>` +
+            `<ul class="mb-0 ps-3">${items}</ul>` +
+            `</div>`
+        );
+    }
+    if (analysis.potOverbookPeak > 3) {
+        const existingList = analysis.potOverlappingExisting.length
+            ? `<div class="mt-1">Already booked during this time: <strong>${escapeHtml([...new Set(analysis.potOverlappingExisting.map(b => b.equipment))].join(", "))}</strong></div>`
+            : "";
+        blocks.push(
+            `<div class="alert alert-warning py-2 mb-2">` +
+            `<div class="fw-bold mb-1">⚡ Potentiostat Overbooking (${analysis.potOverbookPeak} concurrent channels, max 3 allowed):</div>` +
+            `<div>Requesting: <strong>${escapeHtml(analysis.selectedNames.join(", "))}</strong></div>` +
+            existingList +
+            `</div>`
+        );
+    }
+    confirmSubmitModalReasons.innerHTML = blocks.join("");
+    confirmSubmitModalBackdrop.classList.remove("d-none");
+}
+
+function closeConfirmSubmitModal() {
+    confirmSubmitModalBackdrop.classList.add("d-none");
+}
+
+bookingForm.addEventListener("submit", (e) => {
+    if (confirmedConflictSubmit) {
+        confirmedConflictSubmit = false;
+        return;
+    }
+    const analysis = analyzeSubmissionConflicts();
+    if (analysis.invalid) {
+        e.preventDefault();
+        return;
+    }
+    if (analysis.overlapping.length > 0 || analysis.potOverbookPeak > 3) {
+        e.preventDefault();
+        openConfirmSubmitModal(analysis);
+    }
+});
+
+proceedConfirmSubmitBtn.addEventListener("click", () => {
+    confirmedConflictSubmit = true;
+    closeConfirmSubmitModal();
+    bookingForm.submit();
+});
+cancelConfirmSubmitBtn.addEventListener("click", closeConfirmSubmitModal);
+closeConfirmSubmitModalBtn.addEventListener("click", closeConfirmSubmitModal);
+confirmSubmitModalBackdrop.addEventListener("click", (e) => {
+    if (e.target === confirmSubmitModalBackdrop) closeConfirmSubmitModal();
+});
+document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !confirmSubmitModalBackdrop.classList.contains("d-none")) {
+        closeConfirmSubmitModal();
+    }
+});
 
 function setCategory(cat) {
     activeCategory = cat;
@@ -828,9 +1003,11 @@ catDeviceBtn.addEventListener("click", () => setCategory("device"));
 catPotBtn.addEventListener("click", () => setCategory("potentiostat"));
 generalDeviceSelect.addEventListener("change", () => syncHiddenSelectionAndReload());
 potentiostatSelect.addEventListener("change", () => renderPotentiostatChannels());
-userNameSelect.addEventListener("change", () => {
+userNameSelect.addEventListener("change", async () => {
+    await loadUserPotentiostatBookings();
     renderMonthCalendar();
     if (clickedDateISO) renderDayHourlyView(clickedDateISO, false);
+    updateConflictBanner();
 });
 
 document.getElementById("prevMonthBtn").addEventListener("click", () => {

@@ -45,6 +45,11 @@ class Booking(Base):
     # Free-text note the admin can leave when resolving a conflict
     admin_note = Column(Text, nullable=True)
 
+    # Attendance / pre-start confirmation tracking (night-before reminder + auto-delete at start)
+    confirmed_at = Column(DateTime(timezone=True), nullable=True)
+    confirm_token = Column(String(64), nullable=True, index=True)
+    reminder_sent_at = Column(DateTime(timezone=True), nullable=True)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -91,6 +96,7 @@ class User(Base):
     email = Column(String(255), nullable=True, default="")
     password_hash = Column(String(255), nullable=False)
     is_manager = Column(Boolean, default=False, nullable=False)
+    must_change_password = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

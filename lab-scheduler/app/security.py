@@ -56,6 +56,24 @@ def password_fingerprint(password_hash: str) -> str:
     return hashlib.sha256(password_hash.encode("utf-8")).hexdigest()[:16]
 
 
+def validate_password_strength(password: str) -> list[str]:
+    """
+    Validates that a new user password meets lab policy:
+      - At least 8 characters long
+      - Contains at least one uppercase (capital) letter
+      - Contains at least one special character
+    Returns a list of error strings (empty if valid).
+    """
+    errors: list[str] = []
+    if len(password) < 8:
+        errors.append("Password must be at least 8 characters long.")
+    if not any(ch.isupper() for ch in password):
+        errors.append("Password must contain at least one capital letter (A–Z).")
+    if not any(not ch.isalnum() for ch in password):
+        errors.append("Password must contain at least one special character (e.g. !@#$%^&*).")
+    return errors
+
+
 # ---------------------------------------------------------------------------
 # Signed session cookie tokens (HMAC-SHA256, bound to password_hash)
 # ---------------------------------------------------------------------------

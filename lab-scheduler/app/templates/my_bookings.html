@@ -63,11 +63,25 @@
                         {% else %}
                             <span class="badge bg-success">Approved</span>
                         {% endif %}
+                        {% if b.confirmed_at %}
+                            <span class="badge bg-info text-dark ms-1">✅ Confirmed</span>
+                        {% else %}
+                            <span class="badge bg-warning text-dark border border-warning ms-1">⏰ Needs Confirmation</span>
+                            <div class="small text-danger mt-1">
+                                Auto-deletes at {{ b.start_date }} {{ b.start_time or '00:00' }} if unconfirmed
+                            </div>
+                        {% endif %}
                     {% else %}
                         <span class="badge bg-warning text-dark">Pending Manager Approval</span>
                     {% endif %}
                 </td>
                 <td>
+                    {% if b.status == 'approved' and not b.confirmed_at %}
+                    <form method="post" action="/my-bookings/{{ b.id }}/confirm" class="d-inline me-1">
+                        <input type="hidden" name="next_url" value="/my-bookings">
+                        <button type="submit" class="btn btn-sm btn-success">✅ Confirm</button>
+                    </form>
+                    {% endif %}
                     <form method="post" action="/my-bookings/{{ b.id }}/cancel" class="d-inline"
                           data-confirm="Are you sure you intend to cancel your booking for {{ b.equipment }} ({{ b.start_date }}{% if b.start_date != b.end_date %} to {{ b.end_date }}{% endif %}, {{ b.time_label }})? This will free the slot immediately.">
                         <button type="submit" class="btn btn-sm btn-outline-danger">Cancel Booking</button>

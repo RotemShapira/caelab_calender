@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}Confirm Booking{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-6">
+        <div class="card p-4 shadow-sm">
+            {% if not booking %}
+                <h4 class="text-danger mb-2">⚠️ Booking Not Found</h4>
+                <p class="text-muted mb-3">
+                    This confirmation link is invalid, or the booking was already cancelled or automatically deleted because it was not confirmed before its starting time.
+                </p>
+                <a href="/" class="btn btn-primary">Go to Lab Scheduler</a>
+            {% elif booking.status != 'approved' %}
+                <h4 class="text-warning mb-2">ℹ️ Booking Is Not Active</h4>
+                <p class="text-muted mb-3">
+                    Booking #{{ booking.id }} for <strong>{{ booking.equipment }}</strong> currently has status <strong>{{ booking.status }}</strong> and cannot be confirmed.
+                </p>
+                <a href="/" class="btn btn-primary">Go to Lab Scheduler</a>
+            {% elif booking.confirmed_at or just_confirmed %}
+                <h4 class="text-success mb-2">✅ Booking Confirmed!</h4>
+                <p class="text-muted mb-3">
+                    Thank you! Your upcoming lab booking is confirmed and will remain reserved for you.
+                </p>
+                <ul class="list-group mb-4">
+                    <li class="list-group-item d-flex justify-content-between">
+                        <span class="text-muted">Device / Channel</span>
+                        <strong>{{ booking.equipment }}</strong>
+                    </li>
+                    <li class="list-group-item d-flex justify-content-between">
+                        <span class="text-muted">Booked By</span>
+                        <strong>{{ booking.user_name }}</strong>
+                    </li>
+                    <li class="list-group-item d-flex justify-content-between">
+                        <span class="text-muted">Date(s)</span>
+                        <strong>{% if booking.start_date == booking.end_date %}{{ booking.start_date }}{% else %}{{ booking.start_date }} → {{ booking.end_date }}{% endif %}</strong>
+                    </li>
+                    <li class="list-group-item d-flex justify-content-between">
+                        <span class="text-muted">Hours</span>
+                        <strong>{{ booking.time_label }}</strong>
+                    </li>
+                </ul>
+                <div class="d-flex gap-2">
+                    <a href="/my-bookings" class="btn btn-outline-primary">View My Bookings</a>
+                    <a href="/" class="btn btn-primary">Go to Lab Scheduler</a>
+                </div>
+            {% else %}
+                <h4 class="mb-2">⏰ Confirm Your Lab Booking</h4>
+                <p class="text-muted mb-3">
+                    Please confirm that you will use the reservation below. If not confirmed before its starting time (<strong>{{ booking.start_date }} {{ booking.start_time or '00:00' }}</strong>), it will be automatically deleted.
+                </p>
+                <ul class="list-group mb-4">
+                    <li class="list-group-item d-flex justify-content-between">
+                        <span class="text-muted">Device / Channel</span>
+                        <strong>{{ booking.equipment }}</strong>
+                    </li>
+                    <li class="list-group-item d-flex justify-content-between">
+                        <span class="text-muted">Booked By</span>
+                        <strong>{{ booking.user_name }}</strong>
+                    </li>
+                    <li class="list-group-item d-flex justify-content-between">
+                        <span class="text-muted">Date(s)</span>
+                        <strong>{% if booking.start_date == booking.end_date %}{{ booking.start_date }}{% else %}{{ booking.start_date }} → {{ booking.end_date }}{% endif %}</strong>
+                    </li>
+                    <li class="list-group-item d-flex justify-content-between">
+                        <span class="text-muted">Hours</span>
+                        <strong>{{ booking.time_label }}</strong>
+                    </li>
+                    {% if booking.experiment_details %}
+                    <li class="list-group-item">
+                        <div class="text-muted small">Details</div>
+                        <div>{{ booking.experiment_details }}</div>
+                    </li>
+                    {% endif %}
+                </ul>
+                <form method="post" action="/bookings/confirm/{{ token }}">
+                    <button type="submit" class="btn btn-success btn-lg w-100">✅ Confirm My Booking</button>
+                </form>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}

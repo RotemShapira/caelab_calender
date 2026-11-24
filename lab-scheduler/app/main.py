@@ -1,7 +1,9 @@
 import asyncio
 import logging
 import os
-from datetime import date
+import re
+import secrets
+from datetime import date, datetime, timedelta
 from urllib.parse import quote_plus
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, status
@@ -15,6 +17,7 @@ from sqlalchemy.orm import Session
 from . import cleanup, conflict, holidays, models, notifications, schemas
 from .auth import (
     LoginRequiredException,
+    PasswordChangeRequiredException,
     SESSION_COOKIE_NAME,
     get_client_ip,
     get_current_session,
@@ -47,6 +50,7 @@ from .security import (
     is_rate_limited,
     record_failed_attempt,
     set_session_secret,
+    validate_password_strength,
     verify_password,
     verify_password_constant_time,
 )
@@ -81,6 +85,22 @@ def _auto_migrate_schema() -> None:
         if "channel_category" not in cols:
             conn.execute(text("ALTER TABLE bookings ADD COLUMN channel_category VARCHAR(20)"))
             logger.info("Added channel_category column to bookings table.")
+        if "confirmed_at" not in cols:
+            conn.execute(text("ALTER TABLE bookings ADD COLUMN confirmed_at DATETIME"))
+            # Mark all pre-existing approved bookings as confirmed so upgrading never auto-deletes them.
+            conn.execute(
+                text(
+                    "UPDATE bookings SET confirmed_at = CURRENT_TIMESTAMP "
+                    "WHERE status = 'approved' AND confirmed_at IS NULL"
+                )
+            )
+            logger.info("Added confirmed_at column to bookings table and grandfathered existing approved bookings.")
+        if "confirm_token" not in cols:
+            conn.execute(text("ALTER TABLE bookings ADD COLUMN confirm_token VARCHAR(64)"))
+            logger.info("Added confirm_token column to bookings table.")
+        if "reminder_sent_at" not in cols:
+            conn.execute(text("ALTER TABLE bookings ADD COLUMN reminder_sent_at DATETIME"))
+            logger.info("Added reminder_sent_at column to bookings table.")
 
         user_cols = {
             row[1]
@@ -92,6 +112,9 @@ def _auto_migrate_schema() -> None:
         if "email" not in user_cols:
             conn.execute(text("ALTER TABLE users ADD COLUMN email VARCHAR(255) DEFAULT ''"))
             logger.info("Added email column to users table.")
+        if "must_change_password" not in user_cols:
+            conn.execute(text("ALTER TABLE users ADD COLUMN must_change_password BOOLEAN NOT NULL DEFAULT 1"))
+            logger.info("Added must_change_password column to users table.")
 
         holiday_cols = {
             row[1]
@@ -125,9 +148,77 @@ app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
 
 
+_CACHED_BASE_URL: str = ""
+_SAFE_HOST_RE = re.compile(r"^[a-zA-Z0-9.-]+(?::\d{1,5})?$")
+
+
+def _maybe_record_base_url(request: Request) -> None:
+    """
+    Auto-captures the public HTTPS URL (e.g. Tailscale Funnel hostname) once so
+    background reminder emails automatically contain working confirmation links.
+    """
+    global _CACHED_BASE_URL
+    proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip().lower()
+    if not proto:
+        proto = request.url.scheme.lower()
+    raw_host = (
+        request.headers.get("x-forwarded-host")
+        or request.headers.get("host")
+        or ""
+    ).split(",")[0].strip()
+    if not raw_host or not _SAFE_HOST_RE.match(raw_host):
+        return
+    host_only = raw_host.split(":")[0].lower()
+    if host_only in ("localhost", "127.0.0.1", "testserver"):
+        return
+    # Prefer HTTPS public URLs; only store HTTP if nothing has been stored yet
+    if proto != "https" and _CACHED_BASE_URL.startswith("https://"):
+        return
+    candidate = f"{proto}://{raw_host}"
+    if candidate == _CACHED_BASE_URL:
+        return
+    db = SessionLocal()
+    try:
+        notifications.set_setting(db, notifications.SETTING_APP_BASE_URL, candidate)
+        db.commit()
+        _CACHED_BASE_URL = candidate
+    except Exception:
+        logger.debug("Could not persist app_base_url setting.")
+    finally:
+        db.close()
+
+
 @app.middleware("http")
 async def security_and_user_context_middleware(request: Request, call_next):
     request.state.user = get_current_session(request)
+    request.state.unconfirmed_bookings = []
+
+    path = request.url.path
+    if not path.startswith(("/static", "/health", "/api/")):
+        _maybe_record_base_url(request)
+        user_ctx = request.state.user
+        if user_ctx and not user_ctx.get("must_change_password"):
+            db = SessionLocal()
+            try:
+                today = date.today()
+                tomorrow = today + timedelta(days=1)
+                request.state.unconfirmed_bookings = (
+                    db.query(models.Booking)
+                    .filter(
+                        models.Booking.user_name == user_ctx["username"],
+                        models.Booking.status == models.STATUS_APPROVED,
+                        models.Booking.confirmed_at.is_(None),
+                        models.Booking.start_date <= tomorrow,
+                        models.Booking.end_date >= today,
+                    )
+                    .order_by(models.Booking.start_date, models.Booking.start_time)
+                    .all()
+                )
+            except Exception:
+                request.state.unconfirmed_bookings = []
+            finally:
+                db.close()
+
     response = await call_next(request)
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-Content-Type-Options"] = "nosniff"
@@ -145,6 +236,13 @@ async def security_and_user_context_middleware(request: Request, call_next):
 @app.exception_handler(LoginRequiredException)
 async def _login_redirect_handler(request: Request, exc: LoginRequiredException):
     return RedirectResponse(url="/login", status_code=303)
+
+
+@app.exception_handler(PasswordChangeRequiredException)
+async def _password_change_redirect_handler(
+    request: Request, exc: PasswordChangeRequiredException
+):
+    return RedirectResponse(url="/account?first_login=1", status_code=303)
 
 
 def _get_allowed_usernames(db: Session) -> list[str]:
@@ -344,14 +442,17 @@ def login_submit(
         role = "admin"
         matched_username = admin_rec.username
         matched_hash = admin_rec.password_hash
+        needs_pw_change = False
     else:
         role = "manager" if user_rec.is_manager else "user"
         matched_username = user_rec.username
         matched_hash = user_rec.password_hash
+        needs_pw_change = bool(user_rec.must_change_password)
     token = create_session_token(matched_username, role, matched_hash)
 
     is_https = request.headers.get("x-forwarded-proto", "").lower() == "https"
-    resp = RedirectResponse(url="/", status_code=303)
+    redirect_target = "/account?first_login=1" if needs_pw_change else "/"
+    resp = RedirectResponse(url=redirect_target, status_code=303)
     resp.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=token,
@@ -374,18 +475,22 @@ def logout(request: Request):
 @app.get("/account")
 def account_page(
     request: Request,
+    first_login: int = 0,
     db: Session = Depends(get_db),
     current_user: dict = Depends(require_user),
 ):
     if current_user["role"] == "admin":
         return RedirectResponse(url="/admin/settings", status_code=303)
     record = db.query(User).filter(User.username == current_user["username"]).first()
+    must_change = bool(record.must_change_password) if record else False
     return templates.TemplateResponse(
         "account.html",
         {
             "request": request,
             "username": current_user["username"],
             "user_email": (record.email or "") if record else "",
+            "must_change_password": must_change,
+            "first_login": bool(first_login) or must_change,
             "errors": None,
             "success": None,
         },
@@ -405,13 +510,15 @@ def account_update_password(
         return RedirectResponse(url="/admin/settings", status_code=303)
 
     record = db.query(User).filter(User.username == current_user["username"]).first()
+    was_forced = bool(record.must_change_password) if record else False
     errors = []
     if record is None or not verify_password_constant_time(current_password, record.password_hash):
         errors.append("Current password is incorrect.")
-    if len(new_password) < 4:
-        errors.append("New password must be at least 4 characters.")
+    errors.extend(validate_password_strength(new_password))
     if new_password != confirm_password:
         errors.append("New password and confirmation do not match.")
+    if was_forced and new_password == current_password:
+        errors.append("Your new password must be different from your temporary initial password.")
 
     if errors:
         return templates.TemplateResponse(
@@ -420,6 +527,8 @@ def account_update_password(
                 "request": request,
                 "username": current_user["username"],
                 "user_email": (record.email or "") if record else "",
+                "must_change_password": was_forced,
+                "first_login": was_forced,
                 "errors": errors,
                 "success": None,
             },
@@ -427,21 +536,30 @@ def account_update_password(
         )
 
     record.password_hash = hash_password(new_password)
+    record.must_change_password = False
     db.commit()
-    resp = templates.TemplateResponse(
-        "account.html",
-        {
-            "request": request,
-            "username": current_user["username"],
-            "user_email": record.email or "",
-            "errors": None,
-            "success": "Your password has been updated.",
-        },
-    )
+
     is_https = request.headers.get("x-forwarded-proto", "").lower() == "https"
+    new_cookie = create_session_token(record.username, current_user["role"], record.password_hash)
+
+    if was_forced:
+        resp = RedirectResponse(url="/", status_code=303)
+    else:
+        resp = templates.TemplateResponse(
+            "account.html",
+            {
+                "request": request,
+                "username": current_user["username"],
+                "user_email": record.email or "",
+                "must_change_password": False,
+                "first_login": False,
+                "errors": None,
+                "success": "Your password has been updated.",
+            },
+        )
     resp.set_cookie(
         key=SESSION_COOKIE_NAME,
-        value=create_session_token(record.username, current_user["role"], record.password_hash),
+        value=new_cookie,
         max_age=SESSION_TTL_SECONDS,
         httponly=True,
         samesite="lax",
@@ -460,6 +578,7 @@ def account_update_email(
     if current_user["role"] == "admin":
         return RedirectResponse(url="/admin/settings", status_code=303)
     record = db.query(User).filter(User.username == current_user["username"]).first()
+    must_change = bool(record.must_change_password) if record else False
     clean_email = email.strip()
     errors = []
     if clean_email and ("@" not in clean_email or len(clean_email) > 255):
@@ -471,6 +590,8 @@ def account_update_email(
                 "request": request,
                 "username": current_user["username"],
                 "user_email": clean_email,
+                "must_change_password": must_change,
+                "first_login": must_change,
                 "errors": errors or ["Account not found."],
                 "success": None,
             },
@@ -484,6 +605,8 @@ def account_update_email(
             "request": request,
             "username": current_user["username"],
             "user_email": record.email or "",
+            "must_change_password": must_change,
+            "first_login": must_change,
             "errors": None,
             "success": "Your email address has been saved.",
         },
@@ -687,6 +810,7 @@ def create_booking(
         if needs_approval:
             any_conflict = True
 
+        is_same_day_or_past = validated.start_date <= date.today()
         booking = models.Booking(
             user_name=validated.user_name,
             equipment=validated.equipment,
@@ -699,6 +823,8 @@ def create_booking(
             potentiostat_name=meta["pot_name"],
             channel_category=meta["cat"],
             status=models.STATUS_PENDING if needs_approval else models.STATUS_APPROVED,
+            confirmed_at=(datetime.now() if (not needs_approval and is_same_day_or_past) else None),
+            confirm_token=secrets.token_urlsafe(32),
         )
         db.add(booking)
         db.commit()
@@ -915,6 +1041,108 @@ def cancel_my_booking(
     return RedirectResponse(
         url=f"/my-bookings?msg={quote_plus(f'Cancelled your booking for {eq} ({dates}).')}",
         status_code=303,
+    )
+
+
+@app.post("/my-bookings/{booking_id}/confirm")
+def confirm_my_booking(
+    booking_id: int,
+    next_url: str = Form(""),
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_user),
+):
+    booking = db.query(models.Booking).get(booking_id)
+    if not booking:
+        raise HTTPException(status_code=404, detail="Booking not found or already deleted")
+    if booking.user_name != current_user["username"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only confirm your own bookings.",
+        )
+    if booking.status != models.STATUS_APPROVED:
+        return RedirectResponse(
+            url=f"/my-bookings?err={quote_plus('Only approved bookings can be confirmed.')}",
+            status_code=303,
+        )
+    if booking.confirmed_at is None:
+        booking.confirmed_at = datetime.now()
+        db.commit()
+
+    eq = booking.equipment
+    dates = (
+        booking.start_date.isoformat()
+        if booking.start_date == booking.end_date
+        else f"{booking.start_date.isoformat()} to {booking.end_date.isoformat()}"
+    )
+    safe_next = next_url.strip()
+    if safe_next and safe_next.startswith("/") and not safe_next.startswith("//") and safe_next != "/my-bookings":
+        return RedirectResponse(url=safe_next, status_code=303)
+    return RedirectResponse(
+        url=f"/my-bookings?msg={quote_plus(f'Confirmed your booking for {eq} ({dates}).')}",
+        status_code=303,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Booking Confirmation Link (from night-before reminder email)
+# Uses GET preview + POST confirm so email link scanners cannot auto-confirm.
+# ---------------------------------------------------------------------------
+@app.get("/bookings/confirm/{token}")
+def confirm_booking_link_page(
+    request: Request,
+    token: str,
+    db: Session = Depends(get_db),
+):
+    clean_tok = token.strip()
+    booking = (
+        db.query(models.Booking)
+        .filter(models.Booking.confirm_token == clean_tok)
+        .first()
+        if clean_tok
+        else None
+    )
+    return templates.TemplateResponse(
+        "confirm_booking.html",
+        {
+            "request": request,
+            "booking": booking,
+            "token": clean_tok,
+            "just_confirmed": False,
+        },
+    )
+
+
+@app.post("/bookings/confirm/{token}")
+def confirm_booking_link_submit(
+    request: Request,
+    token: str,
+    db: Session = Depends(get_db),
+):
+    verify_same_origin(request)
+    clean_tok = token.strip()
+    booking = (
+        db.query(models.Booking)
+        .filter(models.Booking.confirm_token == clean_tok)
+        .first()
+        if clean_tok
+        else None
+    )
+    just_confirmed = False
+    if booking and booking.status == models.STATUS_APPROVED:
+        if booking.confirmed_at is None:
+            booking.confirmed_at = datetime.now()
+            db.commit()
+            db.refresh(booking)
+        just_confirmed = True
+
+    return templates.TemplateResponse(
+        "confirm_booking.html",
+        {
+            "request": request,
+            "booking": booking,
+            "token": clean_tok,
+            "just_confirmed": just_confirmed,
+        },
     )
 
 
@@ -1531,11 +1759,12 @@ def admin_create_user(
             email=clean_email,
             password_hash=hash_password(default_password),
             is_manager=False,
+            must_change_password=True,
         )
     )
     db.commit()
     return RedirectResponse(
-        url=f"/admin?msg={quote_plus(f'Added lab user \"{clean_username}\".')}",
+        url=f"/admin?msg={quote_plus(f'Added lab user \"{clean_username}\" (will be prompted to set a strong password on first login).')}",
         status_code=303,
     )
 
@@ -1608,9 +1837,10 @@ def admin_reset_user_password(
             status_code=303,
         )
     user.password_hash = hash_password(new_password)
+    user.must_change_password = True
     db.commit()
     return RedirectResponse(
-        url=f"/admin?msg={quote_plus(f'Reset password for \"{user.username}\".')}",
+        url=f"/admin?msg={quote_plus(f'Reset password for \"{user.username}\" (they will be required to choose a new strong password on next login).')}",
         status_code=303,
     )
 
@@ -1928,6 +2158,10 @@ def _approve_and_deny_conflicts(
     )
     prev_statuses = {other.id: other.status for other in overlapping}
     winner.status = models.STATUS_APPROVED
+    if not winner.confirm_token:
+        winner.confirm_token = secrets.token_urlsafe(32)
+    if winner.start_date <= date.today() and winner.confirmed_at is None:
+        winner.confirmed_at = datetime.now()
     for other in overlapping:
         other.status = models.STATUS_DENIED
     db.commit()
@@ -2054,6 +2288,47 @@ def get_equipment_bookings(
             "equipment": b.equipment,
             "user_name": b.user_name,
             "experiment_details": b.experiment_details or "",
+            "start_date": b.start_date.isoformat(),
+            "end_date": b.end_date.isoformat(),
+            "start_time": b.start_time,
+            "end_time": b.end_time,
+            "time_label": b.time_label,
+            "status": b.status,
+        }
+        for b in rows
+    ]
+
+
+@app.get("/api/user-potentiostat-bookings")
+def get_user_potentiostat_bookings(
+    user_name: str = Query(""),
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_user),
+):
+    """
+    Returns all live (approved/pending) potentiostat bookings for a user across
+    ALL potentiostats and channels so the booking form can accurately warn and
+    require confirmation before submitting an overbooking (>3 concurrent channels).
+    """
+    if current_user["role"] in ("admin", "manager") and user_name.strip():
+        target_user = user_name.strip()
+    else:
+        target_user = current_user["username"]
+    rows = (
+        db.query(models.Booking)
+        .filter(
+            models.Booking.user_name == target_user,
+            models.Booking.booking_type == BOOKING_TYPE_POTENTIOSTAT,
+            models.Booking.status.in_((models.STATUS_APPROVED, models.STATUS_PENDING)),
+        )
+        .order_by(models.Booking.start_date, models.Booking.start_time)
+        .all()
+    )
+    return [
+        {
+            "id": b.id,
+            "equipment": b.equipment,
+            "user_name": b.user_name,
             "start_date": b.start_date.isoformat(),
             "end_date": b.end_date.isoformat(),
             "start_time": b.start_time,

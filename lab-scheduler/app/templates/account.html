@@ -7,6 +7,15 @@
             <h4 class="mb-2">👤 Account Settings</h4>
             <p class="text-muted">Signed in as <strong>{{ username }}</strong>.</p>
 
+            {% if must_change_password %}
+            <div class="alert alert-warning border-warning">
+                <div class="fw-bold mb-1">🔐 Password Change Required</div>
+                <div class="small">
+                    For your account security, you must set a new strong password on your first connection (or after a password reset) before accessing Lab Scheduler.
+                </div>
+            </div>
+            {% endif %}
+
             {% if success %}
             <div class="alert alert-success">{{ success }}</div>
             {% endif %}
@@ -19,10 +28,43 @@
             </div>
             {% endif %}
 
+            <!-- Change Password -->
+            <h6 class="mt-2 mb-2">🔑 {% if must_change_password %}Set Your New Password{% else %}Change Your Password{% endif %}</h6>
+            <div class="alert alert-light border small py-2 mb-3">
+                <strong>Password requirements:</strong>
+                <ul class="mb-0 ps-3 mt-1">
+                    <li>At least <strong>8 characters</strong> long</li>
+                    <li>At least one <strong>capital letter</strong> (<code>A–Z</code>)</li>
+                    <li>At least one <strong>special character</strong> (e.g. <code>!@#$%^&amp;*-_</code>)</li>
+                </ul>
+            </div>
+            <form method="post" action="/account" class="mb-4">
+                <div class="mb-3">
+                    <label class="form-label">{% if must_change_password %}Temporary / Current Password{% else %}Current Password{% endif %}</label>
+                    <input type="password" class="form-control" name="current_password" required autocomplete="current-password">
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label">New Password</label>
+                    <input type="password" class="form-control" name="new_password" required minlength="8" autocomplete="new-password">
+                </div>
+
+                <div class="mb-4">
+                    <label class="form-label">Confirm New Password</label>
+                    <input type="password" class="form-control" name="confirm_password" required minlength="8" autocomplete="new-password">
+                </div>
+
+                <button type="submit" class="btn btn-primary w-100">
+                    {% if must_change_password %}Save New Password &amp; Continue{% else %}Update Password{% endif %}
+                </button>
+            </form>
+
+            <hr>
+
             <!-- Update Email -->
             <h6 class="mt-2 mb-2">📧 Notification Email Address</h6>
-            <p class="text-muted small mb-2">You will receive emails here when a manager/admin approves, revokes, or cancels one of your bookings.</p>
-            <form method="post" action="/account/email" class="mb-4">
+            <p class="text-muted small mb-2">You will receive booking status updates and night-before confirmation reminders at this email address.</p>
+            <form method="post" action="/account/email" class="mb-2">
                 <div class="input-group">
                     <input type="email" class="form-control" name="email" maxlength="255"
                            placeholder="your.name@technion.ac.il" value="{{ user_email or '' }}">
@@ -30,30 +72,9 @@
                 </div>
             </form>
 
-            <hr>
-
-            <!-- Change Password -->
-            <h6 class="mb-3">🔑 Change Your Password</h6>
-            <form method="post" action="/account">
-                <div class="mb-3">
-                    <label class="form-label">Current Password</label>
-                    <input type="password" class="form-control" name="current_password" required>
-                </div>
-
-                <div class="mb-3">
-                    <label class="form-label">New Password</label>
-                    <input type="password" class="form-control" name="new_password" required minlength="4">
-                </div>
-
-                <div class="mb-4">
-                    <label class="form-label">Confirm New Password</label>
-                    <input type="password" class="form-control" name="confirm_password" required minlength="4">
-                </div>
-
-                <button type="submit" class="btn btn-primary w-100">Update Password</button>
-            </form>
-
+            {% if not must_change_password %}
             <a href="/" class="btn btn-link mt-2">← Back to Booking Form</a>
+            {% endif %}
         </div>
     </div>
 </div>

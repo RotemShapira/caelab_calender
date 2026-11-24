@@ -50,6 +50,32 @@
         </div>
     </nav>
     <div class="container pb-5">
+        {% if request.state.unconfirmed_bookings %}
+        <div class="alert alert-warning border-warning shadow-sm mb-4">
+            <div class="fw-bold mb-1">⏰ Upcoming Booking Confirmation Required</div>
+            <p class="small mb-2">
+                Please confirm your upcoming approved booking(s) below.
+                <strong>Any booking not confirmed before its starting time is automatically deleted</strong> to free the slot for other lab members.
+            </p>
+            <div class="d-flex flex-column gap-2">
+                {% for b in request.state.unconfirmed_bookings %}
+                <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 bg-white border rounded p-2">
+                    <div class="small">
+                        <strong>{{ b.equipment }}</strong>
+                        —
+                        {% if b.start_date == b.end_date %}{{ b.start_date }}{% else %}{{ b.start_date }} → {{ b.end_date }}{% endif %}
+                        (<span class="fw-semibold">{{ b.time_label }}</span>)
+                        <span class="text-danger ms-1">Confirm before {{ b.start_date }} {{ b.start_time or '00:00' }}</span>
+                    </div>
+                    <form method="post" action="/my-bookings/{{ b.id }}/confirm" class="d-inline mb-0">
+                        <input type="hidden" name="next_url" value="{{ request.url.path }}">
+                        <button type="submit" class="btn btn-sm btn-success">✅ Confirm Booking</button>
+                    </form>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
         {% block content %}{% endblock %}
     </div>
     <script>

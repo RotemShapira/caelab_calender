@@ -28,8 +28,13 @@ SETTING_SMTP_PORT = "smtp_port"
 SETTING_SMTP_USER = "smtp_user"
 SETTING_SMTP_PASSWORD = "smtp_password"
 SETTING_SMTP_FROM = "smtp_from"
+SETTING_APP_BASE_URL = "app_base_url"
 
 _ALLOWED_SMTP_PORTS = (25, 465, 587, 2525)
+
+
+def get_app_base_url(db: Session | None = None) -> str:
+    return _get_setting(db, SETTING_APP_BASE_URL, "APP_BASE_URL", "").rstrip("/")
 
 
 def _get_setting(db: Session | None, key: str, env_var: str, default: str = "") -> str:
@@ -278,3 +283,74 @@ def notify_user_booking_status(
     )
     if not ok:
         logger.warning("User status email to '%s' (%s) failed: %s", booking.user_name, user_email, err)
+
+
+def notify_booking_reminder(booking, confirm_url: str, db: Session) -> bool:
+    """
+    Sends the night-before reminder email asking the user to confirm their
+    upcoming booking (via the confirmation link or by signing in to the app).
+    """
+    user = db.query(User).filter(User.username == booking.user_name).first()
+    user_email = (user.email or "").strip() if user else ""
+    if not user_email:
+        logger.info(
+            "User '%s' has no email configured; skipping reminder email for booking #%s.",
+            booking.user_name,
+            booking.id,
+        )
+        return False
+
+    cutoff_time = booking.start_time or "00:00"
+    link_block = (
+        f"Click here to confirm your booking:\n  {confirm_url}\n\n"
+        if confirm_url
+        else ""
+    )
+    subject = f"[Lab Scheduler] Reminder — Please Confirm Your Booking: {booking.equipment} ({booking.start_date})"
+    message = (
+        f"Hello {booking.user_name},\n\n"
+        f"This is a reminder that you have an upcoming booking starting on {booking.start_date} at {cutoff_time}:\n\n"
+        f"  Device / Channel: {booking.equipment}\n"
+        f"  Dates:            {booking.start_date} to {booking.end_date}\n"
+        f"  Hours:            {booking.time_label}\n\n"
+        f"{link_block}"
+        f"You can also confirm by signing in to the Lab Scheduler website (a confirmation prompt will appear on the page and under My Bookings).\n\n"
+        f"IMPORTANT: If this booking is not confirmed before its starting time ({booking.start_date} at {cutoff_time}), "
+        f"it will be automatically deleted so other lab members can use the equipment."
+    )
+    ok, err = _send_email_raw(
+        subject=subject,
+        message=message,
+        db=db,
+        recipients_override=[user_email],
+    )
+    if not ok:
+        logger.warning("Reminder email to '%s' (%s) failed: %s", booking.user_name, user_email, err)
+    return ok
+
+
+def notify_booking_auto_deleted(booking, db: Session) -> None:
+    """Notifies the user when an unconfirmed booking is auto-deleted at its start time."""
+    user = db.query(User).filter(User.username == booking.user_name).first()
+    user_email = (user.email or "").strip() if user else ""
+    if not user_email:
+        return
+
+    subject = f"[Lab Scheduler] Unconfirmed Booking Automatically Deleted: {booking.equipment}"
+    message = (
+        f"Hello {booking.user_name},\n\n"
+        f"Your booking #{booking.id} was automatically deleted because it was not confirmed before its starting time:\n\n"
+        f"  Device / Channel: {booking.equipment}\n"
+        f"  Dates:            {booking.start_date} to {booking.end_date}\n"
+        f"  Hours:            {booking.time_label}\n\n"
+        f"The time slot has been released for other lab members. If you still need it, please submit a new booking."
+    )
+    ok, err = _send_email_raw(
+        subject=subject,
+        message=message,
+        db=db,
+        recipients_override=[user_email],
+    )
+    if not ok:
+        logger.warning("Auto-delete email to '%s' (%s) failed: %s", booking.user_name, user_email, err)
+

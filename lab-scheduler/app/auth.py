@@ -22,6 +22,13 @@ class LoginRequiredException(Exception):
     """Raised when a browser route requires user login; handled in main.py by redirecting to /login."""
 
 
+class PasswordChangeRequiredException(Exception):
+    """Raised when a user must change their default password on first login."""
+
+
+_PASSWORD_CHANGE_EXEMPT_PATHS = ("/account", "/account/email", "/logout")
+
+
 def get_client_ip(request: Request) -> str:
     """
     Extract the client IP safely behind the local Tailscale Funnel proxy (127.0.0.1).
@@ -95,7 +102,7 @@ def get_current_session(request: Request) -> dict | None:
                 return None
             if not hmac.compare_digest(token_fp, password_fingerprint(rec.password_hash)):
                 return None
-            return {"username": rec.username, "role": "admin"}
+            return {"username": rec.username, "role": "admin", "must_change_password": False}
         else:
             user = db.query(User).filter(User.username == username).first()
             if user is None:
@@ -103,7 +110,11 @@ def get_current_session(request: Request) -> dict | None:
             if not hmac.compare_digest(token_fp, password_fingerprint(user.password_hash)):
                 return None
             live_role = "manager" if user.is_manager else "user"
-            return {"username": user.username, "role": live_role}
+            return {
+                "username": user.username,
+                "role": live_role,
+                "must_change_password": bool(user.must_change_password),
+            }
     finally:
         db.close()
 
@@ -111,12 +122,15 @@ def get_current_session(request: Request) -> dict | None:
 def require_user(request: Request) -> dict:
     """
     Dependency that requires any signed-in Lab User, Manager, or Admin.
-    Redirects unauthenticated visitors to /login.
+    Redirects unauthenticated visitors to /login, and users who still have
+    `must_change_password=True` to /account until they set a strong password.
     """
     verify_same_origin(request)
     session = get_current_session(request)
     if session is None:
         raise LoginRequiredException()
+    if session.get("must_change_password") and request.url.path not in _PASSWORD_CHANGE_EXEMPT_PATHS:
+        raise PasswordChangeRequiredException()
     return session
 
 
@@ -181,6 +195,8 @@ def require_manager_or_admin(
 
     session = get_current_session(request)
     if session and session["role"] in ("admin", "manager"):
+        if session.get("must_change_password") and request.url.path not in _PASSWORD_CHANGE_EXEMPT_PATHS:
+            raise PasswordChangeRequiredException()
         return session
 
     admin_user = _verify_basic_admin(request, credentials)

@@ -36,6 +36,11 @@
                     <div class="alert alert-success">
                         <h5 class="alert-heading">✅ Request Approved — {{ b.equipment }}</h5>
                         <p class="mb-0">No conflicts found. Your booking has been <strong>approved</strong> automatically and now appears on the approved schedule.</p>
+                        {% if not b.confirmed_at %}
+                        <p class="small mb-0 mt-2">
+                            ⏰ <strong>Reminder:</strong> You will receive a confirmation email the night before (and a prompt when you log in). Please confirm before <strong>{{ b.start_date }} {{ b.start_time or '00:00' }}</strong>, or the booking will be automatically deleted.
+                        </p>
+                        {% endif %}
                     </div>
                 {% endif %}
             {% endfor %}
